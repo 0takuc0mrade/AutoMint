@@ -484,18 +484,25 @@ impl RegistryContract {
     // ledgers), and this call extends the profile TTL back to the maximum live
     // window supported by the network.
     pub fn bump_profile(env: Env, user: Address) -> Result<(), RegistryError> {
-        if !env
+        let _profile: UserProfile = env
             .storage()
             .persistent()
-            .has(&DataKey::UserProfile(user.clone()))
-        {
-            return Err(RegistryError::NotRegistered);
-        }
+            .get(&DataKey::UserProfile(user.clone()))
+            .ok_or(RegistryError::NotRegistered)?;
+
         env.storage().persistent().extend_ttl(
             &DataKey::UserProfile(user.clone()),
             LEDGER_THRESHOLD,
             LEDGER_BUMP,
         );
+        // The profile record is the canonical liveness signal for the registry.
+        // The username mapping is allowed to age out independently, and touching
+        // it here can fail if it has already been archived before the profile is
+        // bumped.
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
         env.events().publish((symbol_short!("bump"), user), env.ledger().timestamp());
         Ok(())
     }

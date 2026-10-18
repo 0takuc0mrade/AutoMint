@@ -1,7 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![no_std]
-use automint_common::{PausableStore, LEDGER_BUMP, LEDGER_THRESHOLD};
+//! #347: Event topic/data layout, matching the Stellar Asset Contract
+//! (SAC) convention `topics = (name, ...indexed args)`, `data = payload`,
+//! so that indexers, block explorers and wallets (e.g. Freighter's
+//! activity feed) can key off AMT events the same way they do for SAC
+//! tokens.
+//!
+//! | Function     | Topics                          | Data                  |
+//! |---------------|----------------------------------|------------------------|
+//! | `transfer`    | `("transfer", from, to)`         | `amount: i128`         |
+//! | `mint`        | `("mint", admin, to)`             | `amount: i128`         |
+//! | `burn`        | `("burn", from)`                  | `amount: i128`         |
+//! | `approve`     | `("approve", from, spender)`     | `(amount: i128, expiration_ledger: u32)` |
+//! | `set_admin`   | `("set_admin", admin)`           | `new_admin: Address`   |
+use automint_common::{PausableStore, LEDGER_THRESHOLD};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, String,
 };
@@ -13,8 +26,9 @@ pub enum DataKey {
     Balance(Address),
     State,
     Admin,
-    TotalSupply, // #338
-    MaxSupply,   // #339
+    TotalSupply,     // #338
+    MaxSupply,       // #339
+    Locked(Address), // #344: reserved balance excluded from spendable_balance
 }
 
 #[derive(Clone)]
@@ -50,12 +64,27 @@ pub enum TokenError {
     NegativeAmount = 6,
     AllowanceExpired = 7,
     Overflow = 8,
-    Paused = 1000,         // #336
-    SupplyCapExceeded = 9, // #339
-    InvalidDecimals = 10,  // referenced in tests
+    Paused = 1000,          // #336
+    SupplyCapExceeded = 9,  // #339
+    InvalidDecimals = 10,   // referenced in tests
+    InvalidExpiration = 11, // #346
 }
 
-// TTL constants moved to automint-common (#337)
+// TTL threshold is shared via automint-common (#337); the bump amount is
+// overridden below (#345).
+
+/// #345: this contract overrides the shared `automint_common::LEDGER_BUMP`
+/// (7 days) with the network's maximum entry TTL extension — 3,110,400
+/// ledgers, ≈180 days / 6 months at the network's ~5s/ledger close time.
+/// Every `extend_ttl` call in this file (instance, total supply, and
+/// balance entries) uses this single constant so none of them can drift
+/// out of sync with one another: if the balance entry outlived the
+/// instance entry, the whole contract would archive out from under a
+/// still-"live" balance anyway.
+const LEDGER_BUMP: u32 = 3_110_400;
+/// #346: same network maximum, reused as the cap on how far out an
+/// `approve()` expiration_ledger may be set.
+const MAX_ALLOWANCE_LEDGERS: u32 = 3_110_400;
 
 #[contract]
 pub struct AMTToken;
@@ -116,6 +145,17 @@ impl AMTToken {
             return Err(TokenError::NegativeAmount);
         }
         // #341: SEP-41 permits self-approval; removed from == spender rejection
+        let current = env.ledger().sequence();
+        // #346: a past expiration is only meaningful as a revoke (amount ==
+        // 0); for a non-zero amount it would write an entry with the
+        // default temporary TTL that `allowance()` can never return,
+        // silently misleading the caller into thinking an allowance exists.
+        if amount > 0 && expiration_ledger < current {
+            return Err(TokenError::InvalidExpiration);
+        }
+        if expiration_ledger > current.saturating_add(MAX_ALLOWANCE_LEDGERS) {
+            return Err(TokenError::InvalidExpiration);
+        }
         let key = DataKey::Allowance(AllowanceKey {
             from: from.clone(),
             spender: spender.clone(),
@@ -125,7 +165,6 @@ impl AMTToken {
             expiration_ledger,
         };
         env.storage().temporary().set(&key, &value);
-        let current = env.ledger().sequence();
         if expiration_ledger > current {
             let ttl = expiration_ledger - current;
             env.storage().temporary().extend_ttl(&key, ttl, ttl);
@@ -143,6 +182,23 @@ impl AMTToken {
             .persistent()
             .get(&DataKey::Balance(id))
             .unwrap_or(0)
+    }
+
+    /// #344: SEP-41 `spendable_balance` — the portion of `balance` that is
+    /// actually transferable right now. For this token there is currently
+    /// no locking mechanism, so it equals `balance` minus any reserve held
+    /// in `DataKey::Locked(id)` (0 today for every address). Reading it as
+    /// its own storage lookup, rather than hardcoding `spendable ==
+    /// balance`, lets a future lock/vesting feature populate
+    /// `DataKey::Locked` without an interface break.
+    pub fn spendable_balance(env: Env, id: Address) -> i128 {
+        let balance = Self::balance(env.clone(), id.clone());
+        let locked: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Locked(id))
+            .unwrap_or(0);
+        balance.saturating_sub(locked)
     }
 
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) -> Result<(), TokenError> {
@@ -251,8 +307,8 @@ impl AMTToken {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::TotalSupply, LEDGER_THRESHOLD, LEDGER_BUMP);
-        // #544: as with do_transfer, refresh the balance entry's TTL on
-        // every write instead of only on mint.
+        // #544/#345: as with do_transfer, refresh the balance entry's TTL on
+        // every write instead of only on mint, using the max-TTL bump.
         env.storage().persistent().extend_ttl(
             &DataKey::Balance(from.clone()),
             LEDGER_THRESHOLD,
@@ -305,8 +361,10 @@ impl AMTToken {
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
-        env.events()
-            .publish((symbol_short!("burn"), spender, from), amount);
+        // #347: align with the SAC `burn(from) -> amount` shape used by
+        // `burn()` above — the spender is an authorization detail, not
+        // part of the indexed topic.
+        env.events().publish((symbol_short!("burn"), from), amount);
         Ok(())
     }
 
@@ -352,7 +410,15 @@ impl AMTToken {
             LEDGER_THRESHOLD,
             LEDGER_BUMP,
         );
-        env.events().publish((symbol_short!("mint"), to), amount);
+        // #347: SAC shape is `mint(admin, to) -> amount` — include the
+        // authorizing admin in the topic, not just the recipient.
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(TokenError::NotInitialized)?;
+        env.events()
+            .publish((symbol_short!("mint"), admin, to), amount);
         Ok(())
     }
 
@@ -383,9 +449,31 @@ impl AMTToken {
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
+        // #347: SAC shape is `set_admin(admin) -> new_admin` — topics carry
+        // the (old) authorizing admin, data carries the new one.
         env.events()
-            .publish((symbol_short!("set_admin"),), new_admin);
+            .publish((symbol_short!("set_admin"), current_admin), new_admin);
         Ok(())
+    }
+
+    /// #345: permissionless keeper call that refreshes `id`'s balance
+    /// entry TTL without touching its amount. Anyone may call this — there
+    /// is nothing privileged about extending an entry's own lifetime, and
+    /// requiring auth here would defeat the point of a keeper being able
+    /// to rescue a dormant holder's balance from archival.
+    pub fn bump_balance(env: Env, id: Address) {
+        let key = DataKey::Balance(id);
+        if env.storage().persistent().has(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+            // A balance entry is useless if the contract instance itself
+            // archives — no function on the contract could be invoked at
+            // all to read it. Keep both in lockstep.
+            env.storage()
+                .instance()
+                .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
     }
 
     pub fn admin(env: Env) -> Result<Address, TokenError> {
@@ -600,8 +688,8 @@ extern crate std;
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        Env, String,
+        testutils::{Address as _, Events, Ledger as _},
+        Env, String, Symbol, TryFromVal,
     };
 
     fn setup() -> (Env, Address, AMTTokenClient<'static>) {
@@ -1674,11 +1762,50 @@ mod test {
         let alice = Address::generate(&env);
         client.mint(&alice, &1000_i128);
 
+        // #345: LEDGER_BUMP is now the network's maximum entry TTL, so a
+        // dormant balance survives much longer than before the fix — but a
+        // keeper that never calls `bump_balance` (and no other activity
+        // touches the contract) will still eventually see it archive once
+        // that larger window elapses.
         automint_testutils::advance_past_ttl(&env, LEDGER_BUMP);
 
         let outcome =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client.balance(&alice)));
         assert!(outcome.is_err(), "expected archived entry access to fail");
+    }
+
+    // #345: a keeper calling the permissionless `bump_balance` within the
+    // TTL window keeps a dormant balance alive indefinitely.
+    #[test]
+    fn test_bump_balance_prevents_archival() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        client.mint(&alice, &1000_i128);
+
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP - 1);
+        client.bump_balance(&alice);
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP);
+
+        assert_eq!(client.balance(&alice), 1000_i128);
+    }
+
+    // #345: bump_balance must not change the stored amount.
+    #[test]
+    fn test_bump_balance_does_not_change_amount() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        client.mint(&alice, &1000_i128);
+        client.bump_balance(&alice);
+        assert_eq!(client.balance(&alice), 1000_i128);
+    }
+
+    // #345: bump_balance on an address with no record is a harmless no-op.
+    #[test]
+    fn test_bump_balance_on_missing_record_is_noop() {
+        let (env, _admin, client) = setup();
+        let never_minted = Address::generate(&env);
+        client.bump_balance(&never_minted);
+        assert_eq!(client.balance(&never_minted), 0_i128);
     }
 
     // #544 fix verification: `do_transfer` now renews the *sender's*
@@ -1727,6 +1854,241 @@ mod test {
         automint_testutils::advance_ledger(&env, LEDGER_BUMP);
 
         assert_eq!(client.balance(&alice), 900_i128);
+    }
+
+    // --- Issue #345: TTL archival window is documented in ledgers and days ---
+
+    #[test]
+    fn test_balance_ledger_bump_documents_archival_window_in_days() {
+        // 1 ledger ≈ 5s on Soroban networks (the assumption baked into
+        // `automint_testutils::advance_ledger`). LEDGER_BUMP is the
+        // network's maximum entry TTL, so this is also the longest a
+        // dormant balance can go between `bump_balance` calls before
+        // archiving: 3,110,400 ledgers * 5s = 15,552,000s = 180 days.
+        let seconds = LEDGER_BUMP as u64 * 5;
+        let days = seconds / 86_400;
+        assert_eq!(days, 180);
+    }
+
+    // --- Issue #344: spendable_balance ---
+
+    #[test]
+    fn test_spendable_balance_equals_balance_when_unlocked() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        client.mint(&alice, &1000_i128);
+        assert_eq!(client.spendable_balance(&alice), 1000_i128);
+    }
+
+    #[test]
+    fn test_spendable_balance_zero_for_missing_record() {
+        let (env, _admin, client) = setup();
+        let never_minted = Address::generate(&env);
+        assert_eq!(client.spendable_balance(&never_minted), 0_i128);
+    }
+
+    #[test]
+    fn test_spendable_balance_subtracts_locked_reserve() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        client.mint(&alice, &1000_i128);
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Locked(alice.clone()), &400_i128);
+        });
+        assert_eq!(client.spendable_balance(&alice), 600_i128);
+        // balance() itself is unaffected by the lock
+        assert_eq!(client.balance(&alice), 1000_i128);
+    }
+
+    // --- Issue #346: approve() expiration_ledger validation ---
+
+    #[test]
+    fn test_approve_nonzero_amount_past_expiration_fails() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let current = env.ledger().sequence();
+        env.ledger().set_sequence_number(current + 10);
+        let result = client.try_approve(&alice, &spender, &100_i128, &current);
+        assert_eq!(result, Err(Ok(TokenError::InvalidExpiration)));
+        assert_eq!(client.allowance(&alice, &spender), 0_i128);
+    }
+
+    #[test]
+    fn test_approve_zero_amount_past_expiration_succeeds_and_revokes() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        client.approve(
+            &alice,
+            &spender,
+            &300_i128,
+            &(env.ledger().sequence() + 1000),
+        );
+        assert_eq!(client.allowance(&alice, &spender), 300_i128);
+
+        let current = env.ledger().sequence();
+        env.ledger().set_sequence_number(current + 10);
+        let result = client.try_approve(&alice, &spender, &0_i128, &current);
+        assert_eq!(result, Ok(Ok(())));
+        assert_eq!(client.allowance(&alice, &spender), 0_i128);
+    }
+
+    #[test]
+    fn test_approve_beyond_max_allowance_ledgers_fails() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let current = env.ledger().sequence();
+        let too_far = current.saturating_add(MAX_ALLOWANCE_LEDGERS) + 1;
+        let result = client.try_approve(&alice, &spender, &100_i128, &too_far);
+        assert_eq!(result, Err(Ok(TokenError::InvalidExpiration)));
+    }
+
+    #[test]
+    fn test_approve_at_max_allowance_ledgers_cap_succeeds() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let current = env.ledger().sequence();
+        let at_cap = current.saturating_add(MAX_ALLOWANCE_LEDGERS);
+        let result = client.try_approve(&alice, &spender, &100_i128, &at_cap);
+        assert_eq!(result, Ok(Ok(())));
+        assert_eq!(client.allowance(&alice, &spender), 100_i128);
+    }
+
+    // --- Issue #347: SAC-shaped event topics/data ---
+    //
+    // Mirrors this crate's existing event-assertion idiom (see
+    // `accrual::test::settle_emits_one_event_per_settled_user` and
+    // `bot_nft`/`marketplace` tests): pull the last emitted event, decode
+    // each topic slot and the data payload with `try_from_val`, and assert
+    // against the documented SAC shape.
+
+    #[test]
+    fn test_mint_event_topics_match_sac_shape() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.mint(&user, &500_i128);
+
+        let events = env.events().all();
+        let (contract_id, topics, data) = events.last().unwrap();
+        assert_eq!(contract_id, client.address);
+        assert_eq!(topics.len(), 3);
+        let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        let t1: Address = Address::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+        let t2: Address = Address::try_from_val(&env, &topics.get(2).unwrap()).unwrap();
+        assert_eq!(t0, symbol_short!("mint"));
+        assert_eq!(t1, admin);
+        assert_eq!(t2, user);
+        assert_eq!(i128::try_from_val(&env, &data).unwrap(), 500_i128);
+    }
+
+    #[test]
+    fn test_transfer_event_topics_match_sac_shape() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        client.mint(&alice, &1000_i128);
+        client.transfer(&alice, &bob, &200_i128);
+
+        let events = env.events().all();
+        let (contract_id, topics, data) = events.last().unwrap();
+        assert_eq!(contract_id, client.address);
+        assert_eq!(topics.len(), 3);
+        let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        let t1: Address = Address::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+        let t2: Address = Address::try_from_val(&env, &topics.get(2).unwrap()).unwrap();
+        assert_eq!(t0, symbol_short!("transfer"));
+        assert_eq!(t1, alice);
+        assert_eq!(t2, bob);
+        assert_eq!(i128::try_from_val(&env, &data).unwrap(), 200_i128);
+    }
+
+    #[test]
+    fn test_burn_event_topics_match_sac_shape() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        client.mint(&alice, &1000_i128);
+        client.burn(&alice, &300_i128);
+
+        let events = env.events().all();
+        let (contract_id, topics, data) = events.last().unwrap();
+        assert_eq!(contract_id, client.address);
+        assert_eq!(topics.len(), 2);
+        let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        let t1: Address = Address::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+        assert_eq!(t0, symbol_short!("burn"));
+        assert_eq!(t1, alice);
+        assert_eq!(i128::try_from_val(&env, &data).unwrap(), 300_i128);
+    }
+
+    // #347: burn_from must emit the same (burn, from) shape as burn() —
+    // the spender is an authorization detail, not part of the topic.
+    #[test]
+    fn test_burn_from_event_topics_match_sac_shape() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        client.mint(&alice, &1000_i128);
+        client.approve(
+            &alice,
+            &spender,
+            &300_i128,
+            &(env.ledger().sequence() + 1000),
+        );
+        client.burn_from(&spender, &alice, &100_i128);
+
+        let events = env.events().all();
+        let (contract_id, topics, data) = events.last().unwrap();
+        assert_eq!(contract_id, client.address);
+        assert_eq!(topics.len(), 2);
+        let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        let t1: Address = Address::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+        assert_eq!(t0, symbol_short!("burn"));
+        assert_eq!(t1, alice);
+        assert_eq!(i128::try_from_val(&env, &data).unwrap(), 100_i128);
+    }
+
+    #[test]
+    fn test_approve_event_topics_match_sac_shape() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let expiration = env.ledger().sequence() + 1000;
+        client.approve(&alice, &spender, &250_i128, &expiration);
+
+        let events = env.events().all();
+        let (contract_id, topics, data) = events.last().unwrap();
+        assert_eq!(contract_id, client.address);
+        assert_eq!(topics.len(), 3);
+        let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        let t1: Address = Address::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+        let t2: Address = Address::try_from_val(&env, &topics.get(2).unwrap()).unwrap();
+        assert_eq!(t0, symbol_short!("approve"));
+        assert_eq!(t1, alice);
+        assert_eq!(t2, spender);
+        let (amount, exp): (i128, u32) = <(i128, u32)>::try_from_val(&env, &data).unwrap();
+        assert_eq!((amount, exp), (250_i128, expiration));
+    }
+
+    #[test]
+    fn test_set_admin_event_topics_match_sac_shape() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.set_admin(&new_admin);
+
+        let events = env.events().all();
+        let (contract_id, topics, data) = events.last().unwrap();
+        assert_eq!(contract_id, client.address);
+        assert_eq!(topics.len(), 2);
+        let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        let t1: Address = Address::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+        assert_eq!(t0, symbol_short!("set_admin"));
+        assert_eq!(t1, admin);
+        assert_eq!(Address::try_from_val(&env, &data).unwrap(), new_admin);
     }
 }
 

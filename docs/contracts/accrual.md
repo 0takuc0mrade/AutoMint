@@ -161,6 +161,20 @@ let admin = accrual_client.admin();
 
 ---
 
+### accept_token_admin
+
+```rust
+pub fn accept_token_admin(env: Env) -> Result<(), AccrualError>
+```
+
+Accept the pending AMT Token admin nomination for this Accrual contract. Requires
+authorization from the Accrual admin. The Accrual contract authorizes the
+Token's `accept_admin` call as itself, allowing token administration to move to
+a contract address without exposing a general-purpose forwarding entry point.
+After acceptance, AMT claims can mint through Accrual.
+
+---
+
 ### config
 
 ```rust

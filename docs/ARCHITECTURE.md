@@ -156,6 +156,7 @@ The table below specifies the required authentication signer, verification mecha
 | | `get_accrual_states` | None | Public view | Accrual states for up to 50 users in one call (`None` for unknown users) |
 | | `settle` | Anyone | None (permissionless) | Credits pending points to the registry for up to 25 users without minting; the user still calls `claim` to mint |
 | | `claim` | User | `user.require_auth()` | Claims pending points & triggers mint if >= 100 |
+| | `accept_token_admin` | Accrual admin | `admin.require_auth()`; Accrual contract auth to Token | Accepts the Token admin nomination so accrual claims can mint |
 | | `config` | None | Public view | Returns contract configuration |
 | | `admin` | None | Public view | Returns contract admin address |
 | **Marketplace**| `initialize` | Admin | `admin.require_auth()` | Sets admin, BotNFT address, and fee bps (250) |
@@ -184,7 +185,10 @@ The table below specifies the required authentication signer, verification mecha
 | | `transfer_from` | Spender | `spender.require_auth()` | Transfers tokens using active allowance |
 | | `burn` | From | `from.require_auth()` | Burns tokens from caller balance |
 | | `mint` | Admin | `admin.require_auth()` | Mints new tokens to recipient |
-| | `set_admin` | Admin | `admin.require_auth()` | Transfers admin rights to new address |
+| | `set_admin` | Admin | `admin.require_auth()` | Proposes a new admin; transfer completes only when accepted |
+| | `accept_admin` | Pending admin | `pending_admin.require_auth()` | Accepts the proposed admin transfer |
+| | `cancel_admin_transfer` | Admin | `admin.require_auth()` | Cancels a pending admin transfer |
+| | `set_metadata` | Admin | `admin.require_auth()` | Updates name and symbol; decimals remain immutable |
 | | `admin` | None | Public view | Returns contract admin address |
 | | `decimals` | None | Public view | Returns decimal precision (7) |
 | | `name` | None | Public view | Returns token name ("AutoMint Token") |
@@ -290,7 +294,9 @@ Soroban provides three storage tiers: **Instance**, **Persistent**, and **Tempor
 | | `transfer` | `from: Address`, `to: Address` | `amount: i128` | Tokens transferred |
 | | `burn` | `from: Address` | `amount: i128` | Tokens burned |
 | | `mint` | `to: Address` | `amount: i128` | Tokens minted |
-| | `set_admin` | `symbol_short!("set_admin")` | `new_admin: Address` | Admin transferred |
+| | `admin_proposed` | `("admin_proposed", current_admin)` | `pending_admin: Address` | Admin transfer proposed |
+| | `set_admin` | `("set_admin", old_admin)` | `new_admin: Address` | Admin transfer accepted |
+| | `metadata` | `("metadata",)` | `(old_name, old_symbol, new_name, new_symbol)` | Token metadata updated |
 
 ---
 

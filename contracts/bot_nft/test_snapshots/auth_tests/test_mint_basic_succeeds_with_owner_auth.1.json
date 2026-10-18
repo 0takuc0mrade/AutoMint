@@ -159,6 +159,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "PageCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "TotalUsers"
                             }
                           ]

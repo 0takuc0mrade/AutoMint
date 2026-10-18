@@ -12,8 +12,11 @@ pub enum DataKey {
     // Per-user storage
     UserProfile(Address),
     Username(String),
+    UserTombstone(Address),
+    UserPage(u32),
     // Global storage
     UserList,
+    PageCount,
     TotalUsers,
     Admin,
     Initialized,
@@ -31,6 +34,16 @@ pub struct UserProfile {
     pub claimed_amt: i128,
     pub registered_at: u64,
     pub bot_count: u32,
+}
+
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct UserTombstone {
+    pub address: Address,
+    pub username: String,
+    pub total_points: u64,
+    pub claimed_amt: i128,
+    pub unregistered_at: u64,
 }
 
 // #318: authorized writer set. The accrual contract may update points/claimed
@@ -53,13 +66,58 @@ pub enum RegistryError {
     NotRegistered = 4,
     Unauthorized = 5,
     NotInitialized = 6,
+    Overflow = 7,
+    ImplausiblePoints = 8,
 }
 
+const PAGE_SIZE: u32 = 200;
+const MAX_POINTS_PER_CALL: u64 = 10_000_000;
 const LEDGER_BUMP: u32 = 120960;
 const LEDGER_THRESHOLD: u32 = 103680;
 
 #[contract]
 pub struct RegistryContract;
+
+impl RegistryContract {
+    fn page_count(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PageCount)
+            .unwrap_or(1)
+    }
+
+    fn page_users(env: &Env, page: u32) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::UserPage(page))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn remove_user_from_page(env: &Env, user: &Address) {
+        let page_count = Self::page_count(env);
+        for page in 0..page_count {
+            let users = Self::page_users(env, page);
+            let mut next = Vec::new(env);
+            let mut removed = false;
+            for addr in users.iter() {
+                if addr == *user {
+                    removed = true;
+                } else {
+                    next.push_back(addr);
+                }
+            }
+            if removed {
+                env.storage().persistent().set(&DataKey::UserPage(page), &next);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::UserPage(page),
+                    LEDGER_THRESHOLD,
+                    LEDGER_BUMP,
+                );
+                return;
+            }
+        }
+    }
+}
 
 #[contractimpl]
 impl RegistryContract {
@@ -71,6 +129,7 @@ impl RegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::TotalUsers, &0u32);
+        env.storage().instance().set(&DataKey::PageCount, &1u32);
         env.storage()
             .instance()
             .set(&DataKey::UserList, &Vec::<Address>::new(&env));
@@ -133,21 +192,29 @@ impl RegistryContract {
             LEDGER_BUMP,
         );
 
-        // Add user to the global user list
-        let mut list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::UserList)
-            .unwrap_or_else(|| Vec::new(&env));
-        list.push_back(user.clone());
-        env.storage().instance().set(&DataKey::UserList, &list);
-
-        // Increment total user counter
+        // Write the user into the paged bucket layout to avoid a single ever-growing
+        // instance vector.
         let total: u32 = env
             .storage()
             .instance()
             .get(&DataKey::TotalUsers)
             .unwrap_or(0);
+        let page = total / PAGE_SIZE;
+        let mut page_count = Self::page_count(&env);
+        if page >= page_count {
+            page_count = page + 1;
+            env.storage().instance().set(&DataKey::PageCount, &page_count);
+        }
+        let mut bucket = Self::page_users(&env, page);
+        bucket.push_back(user.clone());
+        env.storage().persistent().set(&DataKey::UserPage(page), &bucket);
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserPage(page),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+
+        // Increment total user counter
         env.storage()
             .instance()
             .set(&DataKey::TotalUsers, &(total + 1));
@@ -237,7 +304,13 @@ impl RegistryContract {
         if points == 0 {
             return Ok(());
         }
-        profile.total_points = profile.total_points.saturating_add(points);
+        if points > MAX_POINTS_PER_CALL {
+            return Err(RegistryError::ImplausiblePoints);
+        }
+        profile.total_points = profile
+            .total_points
+            .checked_add(points)
+            .ok_or(RegistryError::Overflow)?;
         env.storage()
             .persistent()
             .set(&DataKey::UserProfile(user.clone()), &profile);
@@ -248,6 +321,32 @@ impl RegistryContract {
         );
         env.events()
             .publish((symbol_short!("addpoints"), user), points);
+        Ok(())
+    }
+
+    pub fn set_points(env: Env, user: Address, value: u64) -> Result<(), RegistryError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(RegistryError::NotInitialized)?;
+        admin.require_auth();
+        let mut profile: UserProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserProfile(user.clone()))
+            .ok_or(RegistryError::NotRegistered)?;
+        profile.total_points = value;
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserProfile(user.clone()), &profile);
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserProfile(user.clone()),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+        env.events()
+            .publish((symbol_short!("setpts"), user), value);
         Ok(())
     }
 
@@ -323,24 +422,33 @@ impl RegistryContract {
         Ok(())
     }
 
-    // Bubble sort in-contract — gas bounded by user count
+    pub fn get_users(env: Env, page: u32) -> Vec<Address> {
+        let page_count = env.storage().instance().get(&DataKey::PageCount).unwrap_or(0);
+        if page >= page_count {
+            return Vec::new(&env);
+        }
+        env.storage()
+            .persistent()
+            .get(&DataKey::UserPage(page))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    // Bubble sort in-contract — gas bounded by the number of active users.
     pub fn get_leaderboard(env: Env, limit: u32) -> Vec<UserProfile> {
         if limit == 0 {
             return Vec::new(&env);
         }
-        let list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::UserList)
-            .unwrap_or_else(|| Vec::new(&env));
+        let page_count = Self::page_count(&env);
         let mut profiles: Vec<UserProfile> = Vec::new(&env);
-        for addr in list.iter() {
-            if let Some(p) = env
-                .storage()
-                .persistent()
-                .get::<_, UserProfile>(&DataKey::UserProfile(addr.clone()))
-            {
-                profiles.push_back(p);
+        for page in 0..page_count {
+            for addr in Self::page_users(&env, page).iter() {
+                if let Some(p) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, UserProfile>(&DataKey::UserProfile(addr.clone()))
+                {
+                    profiles.push_back(p);
+                }
             }
         }
         let n = profiles.len();
@@ -369,6 +477,71 @@ impl RegistryContract {
             .instance()
             .get(&DataKey::TotalUsers)
             .unwrap_or(0)
+    }
+
+    // Permissionless profile bump for wallet reconnects or stale registrations.
+    // The active archival window is roughly 7 days (LEDGER_BUMP / ~120_960
+    // ledgers), and this call extends the profile TTL back to the maximum live
+    // window supported by the network.
+    pub fn bump_profile(env: Env, user: Address) -> Result<(), RegistryError> {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::UserProfile(user.clone()))
+        {
+            return Err(RegistryError::NotRegistered);
+        }
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserProfile(user.clone()),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+        env.events().publish((symbol_short!("bump"), user), env.ledger().timestamp());
+        Ok(())
+    }
+
+    pub fn unregister(env: Env, user: Address) -> Result<(), RegistryError> {
+        user.require_auth();
+        let profile: UserProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserProfile(user.clone()))
+            .ok_or(RegistryError::NotRegistered)?;
+        if profile.bot_count > 0 {
+            return Err(RegistryError::Unauthorized);
+        }
+
+        let username = profile.username.clone();
+        env.storage().persistent().remove(&DataKey::Username(username.clone()));
+        env.storage().persistent().remove(&DataKey::UserProfile(user.clone()));
+        let tombstone = UserTombstone {
+            address: user.clone(),
+            username,
+            total_points: profile.total_points,
+            claimed_amt: profile.claimed_amt,
+            unregistered_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserTombstone(user.clone()), &tombstone);
+        Self::remove_user_from_page(&env, &user);
+
+        let total: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalUsers)
+            .unwrap_or(0);
+        if total > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalUsers, &(total - 1));
+        }
+
+        env.events().publish(
+            (symbol_short!("unreg"), user.clone()),
+            tombstone.total_points,
+        );
+        Ok(())
     }
 
     pub fn get_admin(env: Env) -> Result<Address, RegistryError> {
@@ -1004,15 +1177,39 @@ mod test {
         assert_eq!(result, Err(Ok(RegistryError::NotRegistered)));
     }
 
-    // #93: total_points saturates at u64::MAX instead of overflowing/panicking
+    // #93: an implausibly large single update must be rejected before it can
+    //      pin a user permanently to the top of the leaderboard.
     #[test]
-    fn test_add_points_saturates_at_max() {
+    fn test_add_points_rejects_implausible_amount() {
         let (env, _admin, client) = setup();
         let user = Address::generate(&env);
         client.register(&user, &String::from_str(&env, "MaxPoints"));
-        client.add_points(&user, &u64::MAX);
-        client.add_points(&user, &1_u64);
+        let result = client.try_add_points(&user, &(10_000_001_u64));
+        assert_eq!(result, Err(Ok(RegistryError::ImplausiblePoints)));
+        assert_eq!(client.get_user(&user).total_points, 0);
+    }
+
+    // #93: overflow must fail without mutating the profile.
+    #[test]
+    fn test_add_points_overflow_returns_error_and_keeps_profile() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "Overflow"));
+        client.set_points(&user, &u64::MAX);
+        let result = client.try_add_points(&user, &1_u64);
+        assert_eq!(result, Err(Ok(RegistryError::Overflow)));
         assert_eq!(client.get_user(&user).total_points, u64::MAX);
+    }
+
+    // #93: admin correction is auditable and allowed to repair a bad value.
+    #[test]
+    fn test_set_points_admin_correction_updates_total() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "Repair"));
+        client.set_points(&user, &42_u64);
+        assert_eq!(client.get_user(&user).total_points, 42);
+        assert_eq!(client.get_admin(), admin);
     }
 
     // #93: Repeated accumulation across many calls sums correctly
@@ -1164,6 +1361,26 @@ mod test {
         let profile = client.get_user(&user);
         assert_eq!(profile.username, String::from_str(&env, "Ttl3"));
         assert_eq!(profile.total_points, 10);
+    }
+
+    // `bump_profile` is designed for the near-expiry case: it refreshes the
+    // profile TTL back to the maximum supported network bump before the profile
+    // is lost to archival.
+    #[test]
+    fn test_bump_profile_restores_access_before_archival() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        let keepalive = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "Ttl4"));
+        client.register(&keepalive, &String::from_str(&env, "KeepaliveTtl"));
+
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP - 1);
+        client.bump_profile(&user);
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP);
+
+        let profile = client.get_user(&user);
+        assert_eq!(profile.username, String::from_str(&env, "Ttl4"));
+        assert_eq!(profile.total_points, 0);
     }
 }
 

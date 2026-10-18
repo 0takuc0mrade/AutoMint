@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 2,
+    "address": 5,
     "nonce": 0
   },
   "auth": [
@@ -96,6 +96,15 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                },
+                {
                   "u64": 0
                 }
               ]
@@ -122,7 +131,7 @@
             ],
             "data": {
               "error": {
-                "contract": 4
+                "contract": 8
               }
             }
           }
@@ -143,7 +152,7 @@
               },
               {
                 "error": {
-                  "contract": 4
+                  "contract": 8
                 }
               }
             ],
@@ -168,7 +177,7 @@
               },
               {
                 "error": {
-                  "contract": 4
+                  "contract": 8
                 }
               }
             ],
@@ -184,6 +193,15 @@
                   "vec": [
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                     },
                     {
                       "u64": 0

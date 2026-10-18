@@ -50,6 +50,7 @@ const mockMarketplace = {
 };
 
 jest.mock("@/hooks/useMarketplace", () => ({
+  useMarketStats: () => ({ data: undefined }),
   useListings: () => ({
     data: mockMarketplace.allListings,
     isLoading: mockMarketplace.allLoading,
@@ -141,16 +142,22 @@ const GOLD_LISTING: MarketplaceListing = {
   id: 10n,
   seller: "GOTHER99999999999999999999999999",
   bot_id: 1n,
+  bot_tier: "Gold",
   price: 5_000_000_000n, // 500 XLM
+  currency: "CCURRENCY9999999999999999999999",
   listed_at: 1n,
+  active: true,
 };
 
 const BASIC_LISTING: MarketplaceListing = {
   id: 11n,
   seller: "GOTHER88888888888888888888888888",
   bot_id: 2n,
+  bot_tier: "Basic",
   price: 100_000_000n, // 10 XLM
+  currency: "CCURRENCY9999999999999999999999",
   listed_at: 2n,
+  active: true,
 };
 
 describe("Marketplace Page Integration (#499)", () => {
@@ -294,7 +301,10 @@ describe("Marketplace Page Integration (#499)", () => {
 
     render(<MarketplacePage />);
 
+    // Buy opens a confirmation dialog; confirming is what fires the mutation.
     fireEvent.click(screen.getByTestId("buy-btn-10"));
+    fireEvent.click(screen.getByRole("button", { name: "Buy" }));
+
     expect(mockMarketplace.buyMutate).toHaveBeenCalledWith(10n, expect.any(Object));
   });
 
@@ -326,7 +336,9 @@ describe("Marketplace Page Integration (#499)", () => {
 
     // Active listing by the user renders with a cancel button.
     expect(screen.getByTestId("marketplace-mine-grid")).toBeInTheDocument();
+    // Cancel also goes through a confirmation dialog first.
     fireEvent.click(screen.getByTestId("cancel-btn-20"));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mockMarketplace.cancelMutate).toHaveBeenCalledWith(20n, expect.any(Object));
   });
 

@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 4,
+    "address": 5,
     "nonce": 0
   },
   "auth": [
@@ -131,24 +131,24 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "TotalUsers"
+                              "symbol": "TopUsers"
                             }
                           ]
                         },
                         "val": {
-                          "u32": 0
+                          "vec": []
                         }
                       },
                       {
                         "key": {
                           "vec": [
                             {
-                              "symbol": "UserList"
+                              "symbol": "TotalUsers"
                             }
                           ]
                         },
                         "val": {
-                          "vec": []
+                          "u32": 0
                         }
                       }
                     ]
@@ -289,6 +289,9 @@
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 }
               ]
             }
@@ -411,6 +414,9 @@
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                     }
                   ]
                 }

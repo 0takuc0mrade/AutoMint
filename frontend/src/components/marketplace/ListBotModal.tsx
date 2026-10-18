@@ -4,7 +4,7 @@ import { useState, useMemo, useId } from "react";
 import dynamic from "next/dynamic";
 import { toast } from "sonner";
 import { useListBot } from "@/hooks/useMarketplace";
-import { xlmToStroops, stroopsToXlm, XLM_DECIMALS } from "@/types";
+import { xlmToStroops, stroopsToXlm, XLM_DECIMALS } from "@/lib/format";
 import type { BotNFT } from "@/types";
 import clsx from "clsx";
 
@@ -49,7 +49,7 @@ export default function ListBotModal({ bot, isOpen, onClose }: ListBotModalProps
     }
 
     const parts = trimmed.split(".");
-    if (parts.length > 1 && parts[1].length > XLM_DECIMALS) {
+    if (parts.length > 1 && (parts[1]?.length ?? 0) > XLM_DECIMALS) {
       return {
         isValid: false,
         error: `Price cannot exceed ${XLM_DECIMALS} decimal places (Stellar token precision limit).`,
@@ -95,7 +95,7 @@ export default function ListBotModal({ bot, isOpen, onClose }: ListBotModalProps
       { botId: bot.id, price: validation.stroops },
       {
         onSuccess: () => {
-          toast.success(`${bot.name} listed for ${priceXlm} XLM`);
+          toast.success(`${bot.nickname ?? bot.tier} listed for ${priceXlm} XLM`);
           onClose();
           setPriceXlm("");
           setTouched(false);
@@ -118,7 +118,7 @@ export default function ListBotModal({ bot, isOpen, onClose }: ListBotModalProps
     .join(" ");
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={`List ${bot.name} for Sale`}>
+    <Modal isOpen={isOpen} onClose={onClose} title={`List ${bot.nickname ?? bot.tier} Bot for Sale`}>
       <form onSubmit={handleSubmit} className="flex flex-col gap-5" noValidate>
         {/* Price input field with associated label, help text, and error linkage */}
         <div className="flex flex-col gap-1.5">

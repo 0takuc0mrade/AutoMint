@@ -8,9 +8,10 @@ import {
   useAccrualState,
   useClaim,
   useAmtBalance,
+  useAmtDecimals,
 } from "@/hooks/useAccrual";
 import { useAllBotDetails } from "@/hooks/useBotDetails";
-import { getPendingPoints } from "@/lib/contracts";
+import { getPendingPoints, bumpUserBots } from "@/lib/contracts";
 import { useState, useEffect } from "react";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { PointsCounter } from "@/components/dashboard/PointsCounter";
@@ -68,6 +69,7 @@ export default function DashboardPage() {
   } = useAllBotDetails(botIds || []);
 
   const { data: amtBalance, isPending: isAmtBalancePending } = useAmtBalance();
+  const { data: amtDecimals } = useAmtDecimals();
   const claim = useClaim();
 
   const [pendingPoints, setPendingPoints] = useState<bigint>(BigInt(0));
@@ -110,6 +112,15 @@ export default function DashboardPage() {
         .catch(() => setPendingPoints(BigInt(0)));
     }
   }, [publicKey, isRegistered, accrualState]);
+
+  // Bump storage TTL for user's bots on dashboard load to prevent archival (#397)
+  useEffect(() => {
+    if (publicKey && botIds && botIds.length > 0) {
+      bumpUserBots(publicKey).catch(() => {
+        // Permissionless maintenance call; ignore simulation or network errors
+      });
+    }
+  }, [publicKey, botIds]);
 
   // Handle claim
   const handleClaim = () => {
@@ -165,41 +176,50 @@ export default function DashboardPage() {
   // Loading state - show skeletons while queries are in flight
   if (isLoading) {
     return (
-      <div className="mx-auto max-w-7xl px-6 py-8">
+      <div
+        className="mx-auto max-w-7xl px-6 py-8"
+        role="status"
+        aria-busy="true"
+        aria-label="Loading dashboard"
+      >
+        <span className="sr-only">Loading dashboard...</span>
+
+        <div className="mb-8">
+          <Skeleton className="h-8 w-56" />
+          <Skeleton className="mt-3 h-4 w-72" />
+        </div>
+
         <div className="grid gap-6 lg:grid-cols-2">
-          {/* Left column */}
+          {/* Left column — points, claim, upgrade */}
           <div className="flex flex-col gap-6">
-            <Skeleton className="rounded-2xl border border-liner bg-card p-5" reducedMotion>
-              <Skeleton className="h-11 w-11 rounded-xl" reducedMotion />
-              <Skeleton className="flex flex-col gap-2 reducedMotion">
-                <Skeleton className="h-4 w-28" reducedMotion />
-                <Skeleton className="h-3 w-16" reducedMotion />
-              </Skeleton>
-            </Skeleton>
-
-            <Skeleton className="rounded-2xl border border-liner bg-card p-5 reducedMotion" reducedMotion>
-              <Skeleton className="h-7 w-48 reducedMotion" />
-            </Skeleton>
-
-            <Skeleton className="rounded-2xl border border-liner bg-card p-5 reducedMotion" reducedMotion>
-
-            <Skeleton className="rounded-2xl border border-liner bg-card p-5 reducedMotion" reducedMotion>
-              <Skeleton className="h-7 w-48 reducedMotion" />
-            </Skeleton>
+            <div className="rounded-2xl border border-liner bg-card p-5">
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-11 w-11 rounded-xl" />
+                <div className="flex flex-col gap-2">
+                  <Skeleton className="h-4 w-28" />
+                  <Skeleton className="h-3 w-16" />
+                </div>
+              </div>
+              <Skeleton className="mt-4 h-7 w-48" />
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <Skeleton className="h-14 rounded-lg" />
+                <Skeleton className="h-14 rounded-lg" />
+              </div>
+              <Skeleton className="mt-4 h-10 w-full rounded-xl" />
+            </div>
+            <Skeleton className="h-24 w-full rounded-2xl" />
           </div>
 
-          {/* Right column */}
+          {/* Right column — bot grid */}
           <div className="flex flex-col gap-6">
-            <Skeleton className="rounded-2xl border border-liner bg-card p-5 reducedMotion" reducedMotion>
-
-            <Skeleton className="rounded-2xl border border-liner bg-card p-5 reducedMotion" reducedMotion>
-
-            <Skeleton className="rounded-2xl border border-liner bg-card p-5 reducedMotion" reducedMotion>
-
-            <Skeleton className="rounded-2xl border border-liner bg-card p-5 reducedMotion" reducedMotion>
-              <Skeleton className="h-12 w-12 items-center justify-center rounded-xl bg-card-2 reducedMotion" />
-              <Skeleton className="mt-3 text-sm text-muted reducedMotion" />
-            </Skeleton>
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-6 w-32" />
+              <Skeleton className="h-4 w-20" />
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Skeleton className="h-48 w-full rounded-2xl" />
+              <Skeleton className="h-48 w-full rounded-2xl" />
+            </div>
           </div>
         </div>
       </div>
@@ -270,10 +290,11 @@ export default function DashboardPage() {
         <div className="flex flex-col gap-6">
           {/* Points Counter */}
           <PointsCounter
-            points={isLoading ? BigInt(0) : Number(profile?.points || BigInt(0))}
+            points={isLoading ? 0 : Number(profile?.points || BigInt(0))}
             rate={isLoading ? 0 : totalRate}
             bots={isLoading ? [] : bots || []}
             amtBalance={isLoading ? BigInt(0) : amtBalance ?? BigInt(0)}
+            amtDecimals={amtDecimals}
           />
 
           {/* Claim Button */}
@@ -293,7 +314,7 @@ export default function DashboardPage() {
         <div className="flex flex-col gap-6">
           <div className="flex items-center justify-between">
             <h2 className="font-display text-lg font-semibold text-text">Your Bots</h2>
-            <span className="text-sm text-muted">{isLoading ? loading... : bots?.length || 0} owned</span>
+            <span className="text-sm text-muted">{isLoading ? "loading..." : bots?.length || 0} owned</span>
           </div>
 
           {isBotsError || isBotsDetailsError ? (
@@ -310,14 +331,16 @@ export default function DashboardPage() {
               data-testid="bots-error-state"
             />
           ) : isLoading ? (
-            <Skeleton className="rounded-2xl border border-liner bg-card p-5 reducedMotion" reducedMotion>
-              <Skeleton className="h-11 w-11 rounded-xl" reducedMotion />
-              <Skeleton className="flex flex-col gap-2 reducedMotion">
-                <Skeleton className="h-4 w-28" reducedMotion />
-                <Skeleton className="h-3 w-16" reducedMotion />
-              </Skeleton>
-              <Skeleton className="h-6 w-16 rounded-full" reducedMotion />
-            </Skeleton>
+            <div className="rounded-2xl border border-liner bg-card p-5">
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-11 w-11 rounded-xl" />
+                <div className="flex flex-col gap-2">
+                  <Skeleton className="h-4 w-28" />
+                  <Skeleton className="h-3 w-16" />
+                </div>
+              </div>
+              <Skeleton className="mt-4 h-6 w-16 rounded-full" />
+            </div>
           ) : bots && bots.length > 0 ? (
             <div className="grid gap-4 sm:grid-cols-2">
               {bots.map((bot: BotNFT) => (

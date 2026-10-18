@@ -14,12 +14,21 @@
 //! remain readable via `get_listing(id)` even after the listing has been
 //! bought or cancelled (with `active == false`). `get_active_listings` only
 //! returns currently-active entries. Clients that need pagination should use
-//! `get_active_listings(start, limit)` together with `next_listing_id()` as a
+//! `get_active_listings(cursor, limit)` (listing-id cursor; returns the next cursor) or `next_listing_id()` as a
 //! cursor bound rather than brute-force scanning all IDs. This design mirrors
 //! AM-016's cursor guidance and is a deliberate transparency choice for a
 //! public chain; an alternative (hash of `(seller, bot_id, nonce)`) was
 //! considered and rejected because it would hide volume at the cost of UX
 //! without adding privacy on-chain.
+//!
+//! ## Escrowed-bot rate accrual (#443)
+//!
+//! When a bot is listed, it is transferred to the marketplace contract, which
+//! becomes its owner. The marketplace address must be excluded from rate
+//! accounting in sync_rate (AM-003) and similar operations to prevent accrual
+//! on escrowed bots from accumulating to an address that cannot claim.
+//! Rate accrual for escrowed bots is either burned (simple) or credited to the
+//! seller for the listing duration (documented economic model).
 //!
 //! ## Price, currency and fee relationship
 //!
@@ -52,6 +61,51 @@
 //!
 //! `list_bot` returns `PriceTooLow` when `price < min_price(currency)`.
 //!
+//! ## Per-seller listing limits (#438)
+//!
+//! Each seller may maintain up to a configurable number of active listings
+//! (default: 50). This cap prevents one attacker from flooding the marketplace
+//! with thousands of dust listings. The limit applies only to *active* listings;
+//! cancelled or completed listings do not count.
+//!
+//! `list_bot` returns `TooManyListings` when `seller`'s active listing count
+//! reaches the cap. Cancelling or selling a listing frees a slot.
+//!
+//! The cap is readable via `get_listing_cap()` and adjustable by admin via
+//! `set_listing_cap(new_cap)`.
+//!
+//! ## Bot NFT contract validation (#444)
+//!
+//! At initialization and on `set_bot_nft`, the marketplace probes the supplied
+//! address with a cheap read (checking if it responds to the bot_nft interface)
+//! and rejects an unresponsive one with `InvalidBotNft`. This prevents a
+//! permanently-broken marketplace caused by a typo in the bot_nft address.
+//! The bot_nft address is readable via `bot_nft()` getter.
+//!
+//! ## Check ordering in mutating functions (#433)
+//!
+//! `buy_bot`, `cancel_listing` and `update_price` validate in one fixed order:
+//! existence -> authorization -> state validity -> effects. A caller who is not
+//! authorized for a listing therefore always gets `Unauthorized`/`SelfPurchase`
+//! whatever the listing's state, so probing listing IDs does not reveal which
+//! are active.
+//!
+//! ## Pause and admin transfer (#434)
+//!
+//! While paused, `list_bot`, `buy_bot` and `update_price` fail with
+//! `ContractPaused`. `cancel_listing` deliberately keeps working so sellers can
+//! always retrieve their escrowed bots. Admin rotation is two-step:
+//! `propose_admin(new_admin)` then `accept_admin()` signed by the new admin.
+//!
+//! ## Sales statistics (#432)
+//!
+//! `tier_stats(tier)` and `market_stats()` expose, per bot tier, cumulative
+//! volume, sale count, last sale price and the floor (lowest active listing
+//! price, `0` when none). Volume and prices are raw base units summed across
+//! whatever currencies were used. Each list, sale, cancel or price change
+//! updates one tier's record in O(1); the floor is rescanned only when the
+//! listing that held it leaves the market or is repriced upward.
+//!
 //! ## Events
 //!
 //! The marketplace emits the following events for auditing:
@@ -71,25 +125,50 @@
 //!   Topics: ("bot_nft_updated",), Data: (old_nft, new_nft)
 //! - `admin_updated`: Emitted when admin changes.
 //!   Topics: ("admin_updated",), Data: (old_admin, new_admin)
+//! - `admin_proposed`: Emitted when an admin transfer is proposed.
+//!   Topics: ("admin_proposed",), Data: (current_admin, pending_admin)
+//! - `paused` / `unpaused`: Emitted when the admin pauses or resumes trading.
+//! - `price_upd`: Emitted when a listing price changes.
+//!   Topics: ("price_upd", seller, listing_id), Data: (old_price, new_price)
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
     Vec,
 };
 
-use automint_bot_nft::{BotNFTContractClient, BotTier};
+use automint_bot_nft::{BotNFT, BotNFTContractClient, BotTier};
 
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
     Listing(u64),
-    ActiveListings,
+    /// Paged listing-ID index: page `n` holds at most `LISTING_PAGE_SIZE` ids
+    /// in ascending order (persistent storage).
+    ListingPage(u32),
+    /// Number of listing pages allocated (instance storage, a single u32).
+    PageCount,
     UserListings(Address),
     UserPurchases(Address),
     NextListingId,
     Config,
     Initialized,
     MinPrice(Address),
+    UserActiveListingCount(Address),
+    ListingCap,
+    Paused,
+    PendingAdmin,
+    TierStats(BotTier),
+    BotListing(u64),
+    Locked,            // #326: Reentrancy guard
+    AllowedCurrencies, // #325: Currency allowlist
+    /// An escrowed offer by id (persistent) (#425).
+    Offer(u64),
+    /// Open offer ids for a bot, oldest first (persistent) (#425).
+    BotOffers(u64),
+    /// Next offer id to assign (instance) (#425).
+    NextOfferId,
+    /// Platform fees accrued per currency and not yet withdrawn (persistent) (#426).
+    Fees(Address),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +182,10 @@ pub struct Listing {
     pub currency: Address,
     pub listed_at: u64,
     pub active: bool,
+    /// Unix timestamp (seconds) after which the listing is considered expired.
+    /// `buy_bot` rejects purchases past this time; `reclaim_expired` returns
+    /// the bot to the seller. Bounded to 1–90 days from `listed_at` (#423).
+    pub expires_at: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -116,12 +199,53 @@ pub struct Purchase {
     pub purchased_at: u64,
 }
 
+/// Sales statistics for one bot tier (#432).
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct TierStats {
+    pub tier: BotTier,
+    /// Cumulative sale volume in raw base units.
+    pub volume: i128,
+    pub sale_count: u64,
+    pub last_sale_price: i128,
+    /// Lowest active listing price for this tier; `0` when nothing is listed.
+    pub floor_price: i128,
+    /// Listing holding the floor; `0` when nothing is listed.
+    pub floor_listing_id: u64,
+}
+
 #[derive(Clone)]
 #[contracttype]
 pub struct Config {
     pub admin: Address,
     pub bot_nft: Address,
     pub fee_bps: u32,
+    pub royalty_bps: u32,
+}
+
+/// A buyer's escrowed bid for a bot (#425).
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct Offer {
+    pub id: u64,
+    pub buyer: Address,
+    pub bot_id: u64,
+    /// Escrowed amount in `currency`'s base units.
+    pub amount: i128,
+    pub currency: Address,
+    pub created_at: u64,
+    /// Ledger timestamp from which the offer can no longer be accepted and
+    /// anyone may cancel it to refund the buyer.
+    pub expires_at: u64,
+    pub status: OfferStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[contracttype]
+pub enum OfferStatus {
+    Active,
+    Accepted,
+    Cancelled,
 }
 
 #[contracterror]
@@ -142,10 +266,53 @@ pub enum MarketplaceError {
     PriceTooLow = 13,
     ListingStale = 14,
     SelfPurchase = 15,
+    TooManyListings = 16,
+    InvalidBotNft = 17,
+    ContractPaused = 18,
+    NoPendingAdmin = 19,
+    BotNotFound = 20,
+    NotBotOwner = 21,
+    Reentrancy = 22,          // #326: Reentrancy guard
+    UnsupportedCurrency = 23, // #325: Currency allowlist
+    ListingExpired = 24,      // #423: listing expiry
+    /// `make_offer`: `expires_at` is not in the future (#425).
+    InvalidExpiry = 25,
+    OfferNotFound = 26,
+    /// The offer was already accepted or cancelled (#425).
+    OfferNotActive = 27,
+    /// `accept_offer`: the offer's `expires_at` has passed (#425).
+    OfferExpired = 28,
+    /// `cancel_offer` before expiry by someone other than the buyer (#425).
+    NotOfferOwner = 29,
+    /// `make_offer` on a bot the buyer already owns or has listed (#425).
+    OfferOnOwnBot = 30,
+    /// The bot already carries `MAX_OFFERS_PER_BOT` open offers (#425).
+    TooManyOffers = 31,
+    /// `withdraw_fees` amount was zero or negative (#426).
+    InvalidAmount = 32,
+    /// `withdraw_fees` amount exceeds the accrued fee balance (#426).
+    InsufficientFees = 33,
 }
 
+/// Every bot tier, in order, for per-tier reporting.
+const ALL_TIERS: [BotTier; 5] = [
+    BotTier::Basic,
+    BotTier::Bronze,
+    BotTier::Silver,
+    BotTier::Gold,
+    BotTier::Diamond,
+];
+
+/// Maximum listing ids per `ListingPage` bucket (#333).
+const LISTING_PAGE_SIZE: u32 = 100;
+/// Maximum index entries examined by one `get_listings_filtered` call.
+const MAX_FILTER_SCAN: u32 = 200;
 const LEDGER_BUMP: u32 = 120960;
 const LEDGER_THRESHOLD: u32 = 103680;
+/// Maximum open offers a single bot may carry (#425); bounds the per-bot
+/// index so `get_offers_for_bot` and offer bookkeeping stay O(1) in storage
+/// entries.
+pub const MAX_OFFERS_PER_BOT: u32 = 25;
 
 #[contract]
 pub struct MarketplaceContract;
@@ -153,28 +320,36 @@ pub struct MarketplaceContract;
 #[contractimpl]
 impl MarketplaceContract {
     /// Set the admin and bot_nft addresses. Fails with `AlreadyInitialized` if
-    /// called twice.
+    /// called twice. Validates bot_nft contract responds to admin() call.
     pub fn initialize(
         env: Env,
         admin: Address,
         bot_nft: Address,
         fee_bps: u32,
+        royalty_bps: u32,
     ) -> Result<(), MarketplaceError> {
         if env.storage().instance().has(&DataKey::Initialized) {
             return Err(MarketplaceError::AlreadyInitialized);
         }
         admin.require_auth();
+
+        Self::probe_bot_nft(&env, &bot_nft)?;
+
+        if (fee_bps as u64) + (royalty_bps as u64) > 10_000 {
+            return Err(MarketplaceError::InvalidPrice);
+        }
+
         let config = Config {
             admin: admin.clone(),
             bot_nft: bot_nft.clone(),
             fee_bps,
+            royalty_bps,
         };
         env.storage().instance().set(&DataKey::Config, &config);
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::NextListingId, &1u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::ActiveListings, &Vec::<u64>::new(&env));
+        env.storage().instance().set(&DataKey::PageCount, &0u32);
+        env.storage().instance().set(&DataKey::ListingCap, &50u32);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
@@ -205,11 +380,7 @@ impl MarketplaceContract {
             .storage()
             .instance()
             .get(&DataKey::Config)
-            .unwrap_or(Config {
-                admin: currency.clone(),
-                bot_nft: currency.clone(),
-                fee_bps: 250,
-            });
+            .expect("Marketplace not initialized");
         Self::min_price_for_currency(&env, &currency, config.fee_bps)
     }
 
@@ -229,7 +400,10 @@ impl MarketplaceContract {
         if min_price <= 0 {
             return Err(MarketplaceError::InvalidPrice);
         }
-        let old: Option<i128> = env.storage().instance().get(&DataKey::MinPrice(currency.clone()));
+        let old: Option<i128> = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinPrice(currency.clone()));
         env.storage()
             .instance()
             .set(&DataKey::MinPrice(currency.clone()), &min_price);
@@ -251,43 +425,96 @@ impl MarketplaceContract {
         bot_id: u64,
         price: i128,
         currency: Address,
+        duration_secs: u64,
     ) -> Result<u64, MarketplaceError> {
-        seller.require_auth();
+        Self::check_and_set_lock(&env)?;
 
-        // A listing must have a strictly positive price.
-        if price <= 0 {
+        seller.require_auth();
+        if let Err(e) = Self::require_not_paused(&env) {
+            Self::clear_lock(&env);
+            return Err(e);
+        }
+
+        // duration_secs must be between 1 day and 90 days (#423).
+        const MIN_DURATION: u64 = 86_400; // 1 day
+        const MAX_DURATION: u64 = 86_400 * 90; // 90 days
+        if !(MIN_DURATION..=MAX_DURATION).contains(&duration_secs) {
+            Self::clear_lock(&env);
             return Err(MarketplaceError::InvalidPrice);
         }
 
-        let config: Config = env
+        // A listing must have a strictly positive price.
+        if price <= 0 {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::InvalidPrice);
+        }
+
+        let config: Config = match env.storage().instance().get(&DataKey::Config) {
+            Some(c) => c,
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::NotInitialized);
+            }
+        };
+
+        let listing_cap: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::Config)
-            .ok_or(MarketplaceError::NotInitialized)?;
+            .get(&DataKey::ListingCap)
+            .unwrap_or(50);
+
+        let user_count: u32 = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::UserActiveListingCount(seller.clone()))
+            .unwrap_or(0);
+
+        if user_count >= listing_cap {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::TooManyListings);
+        }
+
+        // #325: Check if currency is allowlisted
+        if !Self::is_currency_allowed(&env, &currency) {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::UnsupportedCurrency);
+        }
 
         // Enforce per-currency floor: price must be >= min_price(currency).
         // The default guarantees fee >= 1 base unit when fee_bps > 0.
         let min_price = Self::min_price_for_currency(&env, &currency, config.fee_bps);
         if price < min_price {
+            Self::clear_lock(&env);
             return Err(MarketplaceError::PriceTooLow);
         }
 
-        // Fetch the bot's tier from the NFT contract.
+        // Fetch the bot from the NFT contract. A missing bot maps to
+        // BotNotFound (no extra cross-contract call is spent), and a bot
+        // owned by someone else maps to NotBotOwner — both checked before
+        // the escrow transfer, which keeps BotTransferFailed for genuine
+        // transfer failures (#427).
         let bot_client = BotNFTContractClient::new(&env, &config.bot_nft);
-        let bot = bot_client
-            .try_get_bot(&bot_id)
-            .map_err(|_| MarketplaceError::BotTransferFailed)?
-            .map_err(|_| MarketplaceError::BotTransferFailed)?;
+        let bot = match bot_client.try_get_bot(&bot_id) {
+            Ok(Ok(b)) => b,
+            _ => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::BotNotFound);
+            }
+        };
+        if bot.owner != seller {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::NotBotOwner);
+        }
         let bot_tier = bot.tier;
 
-        // Escrow the bot into the marketplace. The transfer fails (and we
-        // surface BotTransferFailed instead of panicking) when the bot does not
-        // exist or the seller is not its owner.
+        // Escrow the bot into the marketplace. A failure here is a genuine
+        // transfer failure, surfaced as BotTransferFailed.
         let marketplace = env.current_contract_address();
         if bot_client
             .try_transfer(&bot_id, &seller, &marketplace)
             .is_err()
         {
+            Self::clear_lock(&env);
             return Err(MarketplaceError::BotTransferFailed);
         }
 
@@ -296,7 +523,15 @@ impl MarketplaceContract {
             .instance()
             .get(&DataKey::NextListingId)
             .unwrap_or(1);
+        let next_listing_id = match listing_id.checked_add(1) {
+            Some(n) => n,
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::Overflow);
+            }
+        };
 
+        let now = env.ledger().timestamp();
         let listing = Listing {
             id: listing_id,
             seller: seller.clone(),
@@ -304,8 +539,9 @@ impl MarketplaceContract {
             bot_tier,
             price,
             currency: currency.clone(),
-            listed_at: env.ledger().timestamp(),
+            listed_at: now,
             active: true,
+            expires_at: now.saturating_add(duration_secs),
         };
         env.storage()
             .persistent()
@@ -316,15 +552,20 @@ impl MarketplaceContract {
             LEDGER_BUMP,
         );
 
-        let mut active: Vec<u64> = env
-            .storage()
-            .instance()
-            .get(&DataKey::ActiveListings)
-            .unwrap_or_else(|| Vec::new(&env));
-        active.push_back(listing_id);
         env.storage()
-            .instance()
-            .set(&DataKey::ActiveListings, &active);
+            .persistent()
+            .set(&DataKey::BotListing(bot_id), &listing_id);
+        env.storage().persistent().extend_ttl(
+            &DataKey::BotListing(bot_id),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+
+        if let Err(e) = Self::append_listing_id(&env, listing_id) {
+            Self::clear_lock(&env);
+            return Err(e);
+        }
+        Self::on_listing_added(&env, &listing);
 
         let mut user_listings: Vec<u64> = env
             .storage()
@@ -336,9 +577,26 @@ impl MarketplaceContract {
             .persistent()
             .set(&DataKey::UserListings(seller.clone()), &user_listings);
 
+        let updated_count = match user_count.checked_add(1) {
+            Some(n) => n,
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::Overflow);
+            }
+        };
+        env.storage().persistent().set(
+            &DataKey::UserActiveListingCount(seller.clone()),
+            &updated_count,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserActiveListingCount(seller.clone()),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+
         env.storage()
             .instance()
-            .set(&DataKey::NextListingId, &(listing_id + 1));
+            .set(&DataKey::NextListingId, &next_listing_id);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
@@ -347,27 +605,56 @@ impl MarketplaceContract {
             (symbol_short!("listed"), seller, listing_id),
             (bot_id, price),
         );
+        Self::clear_lock(&env);
         Ok(listing_id)
     }
 
     pub fn buy_bot(env: Env, buyer: Address, listing_id: u64) -> Result<(), MarketplaceError> {
+        Self::check_and_set_lock(&env)?;
+
         buyer.require_auth();
-        let mut listing: Listing = env
+        if let Err(e) = Self::require_not_paused(&env) {
+            Self::clear_lock(&env);
+            return Err(e);
+        }
+        // Order: existence -> authorization -> state validity -> effects.
+        let mut listing: Listing = match env
             .storage()
             .persistent()
             .get(&DataKey::Listing(listing_id))
-            .ok_or(MarketplaceError::ListingNotFound)?;
-        if !listing.active {
-            return Err(MarketplaceError::ListingNotActive);
-        }
+        {
+            Some(l) => l,
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::ListingNotFound);
+            }
+        };
         if listing.seller == buyer {
+            Self::clear_lock(&env);
             return Err(MarketplaceError::SelfPurchase);
         }
-        let config: Config = env
-            .storage()
-            .instance()
-            .get(&DataKey::Config)
-            .ok_or(MarketplaceError::NotInitialized)?;
+        if !listing.active {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::ListingNotActive);
+        }
+        // Reject purchases on expired listings (#423).
+        if env.ledger().timestamp() > listing.expires_at {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::ListingExpired);
+        }
+        let config: Config = match env.storage().instance().get(&DataKey::Config) {
+            Some(c) => c,
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::NotInitialized);
+            }
+        };
+
+        // #325: Check if the currency is still allowlisted
+        if !Self::is_currency_allowed(&env, &listing.currency) {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::UnsupportedCurrency);
+        }
 
         // Verify the marketplace still owns the escrowed bot before moving any
         // funds. If the bot is missing or has been reassigned (admin action,
@@ -382,7 +669,8 @@ impl MarketplaceContract {
                 env.storage()
                     .persistent()
                     .set(&DataKey::Listing(listing_id), &listing);
-                Self::remove_active_listing(&env, listing_id);
+                Self::on_listing_removed(&env, &listing);
+                Self::clear_lock(&env);
                 return Err(MarketplaceError::ListingStale);
             }
         };
@@ -391,21 +679,52 @@ impl MarketplaceContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::Listing(listing_id), &listing);
-            Self::remove_active_listing(&env, listing_id);
+            Self::on_listing_removed(&env, &listing);
+            Self::clear_lock(&env);
             return Err(MarketplaceError::ListingStale);
         }
 
-        // 2.5% fee (250 bps) by default, guarded against overflow.
-        let fee = listing
-            .price
-            .checked_mul(config.fee_bps as i128)
-            .ok_or(MarketplaceError::Overflow)?
-            .checked_div(10_000)
-            .ok_or(MarketplaceError::Overflow)?;
-        let seller_amount = listing
-            .price
-            .checked_sub(fee)
-            .ok_or(MarketplaceError::Overflow)?;
+        let platform_fee = match listing.price.checked_mul(config.fee_bps as i128) {
+            Some(p) => match p.checked_div(10_000) {
+                Some(f) => f,
+                None => {
+                    Self::clear_lock(&env);
+                    return Err(MarketplaceError::Overflow);
+                }
+            },
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::Overflow);
+            }
+        };
+
+        let royalty = match listing.price.checked_mul(config.royalty_bps as i128) {
+            Some(p) => match p.checked_div(10_000) {
+                Some(r) => r,
+                None => {
+                    Self::clear_lock(&env);
+                    return Err(MarketplaceError::Overflow);
+                }
+            },
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::Overflow);
+            }
+        };
+
+        let seller_amount = match listing.price.checked_sub(platform_fee) {
+            Some(p) => match p.checked_sub(royalty) {
+                Some(a) => a,
+                None => {
+                    Self::clear_lock(&env);
+                    return Err(MarketplaceError::Overflow);
+                }
+            },
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::Overflow);
+            }
+        };
 
         // Transfer the NFT first. If payment later fails the buyer already
         // holds the bot, which is preferable to the reverse (payment moved but
@@ -415,24 +734,60 @@ impl MarketplaceContract {
             .try_transfer(&listing.bot_id, &marketplace, &buyer)
             .is_err()
         {
+            Self::clear_lock(&env);
             return Err(MarketplaceError::BotTransferFailed);
         }
 
-        // Now handle payment transfers.
+        // Pull the full price into the marketplace first so the buyer's
+        // solvency is one atomic check, then pay out every leg from the
+        // contract. Every token call is checked: any failure aborts the whole
+        // invocation (including the bot transfer above), so a fee can never be
+        // silently skipped.
         let token_client = token::Client::new(&env, &listing.currency);
         if token_client
-            .try_transfer(&buyer, &listing.seller, &seller_amount)
+            .try_transfer(&buyer, &marketplace, &listing.price)
             .is_err()
         {
+            Self::clear_lock(&env);
             return Err(MarketplaceError::PaymentFailed);
         }
-        if fee > 0 {
-            if token_client
-                .try_transfer(&buyer, &config.admin, &fee)
-                .is_err()
-            {
-                return Err(MarketplaceError::PaymentFailed);
+
+        // The royalty goes to the original minter; when the minter is the
+        // seller themself it stays with the seller so no funds are stranded.
+        let pay_royalty = royalty > 0 && bot.minter != listing.seller;
+        let seller_payout = if royalty > 0 && !pay_royalty {
+            match seller_amount.checked_add(royalty) {
+                Some(v) => v,
+                None => {
+                    Self::clear_lock(&env);
+                    return Err(MarketplaceError::Overflow);
+                }
             }
+        } else {
+            seller_amount
+        };
+
+        if seller_payout > 0
+            && token_client
+                .try_transfer(&marketplace, &listing.seller, &seller_payout)
+                .is_err()
+        {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::PaymentFailed);
+        }
+        // The platform fee stays in the contract's balance and is tracked in
+        // `DataKey::Fees(currency)` for `withdraw_fees` (#426).
+        if let Err(e) = Self::accrue_fee(&env, &listing.currency, platform_fee) {
+            Self::clear_lock(&env);
+            return Err(e);
+        }
+        if pay_royalty
+            && token_client
+                .try_transfer(&marketplace, &bot.minter, &royalty)
+                .is_err()
+        {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::PaymentFailed);
         }
 
         listing.active = false;
@@ -444,7 +799,15 @@ impl MarketplaceContract {
             LEDGER_THRESHOLD,
             LEDGER_BUMP,
         );
-        Self::remove_active_listing(&env, listing_id);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::BotListing(listing.bot_id));
+        if let Err(e) = Self::record_sale(&env, listing.bot_tier, listing.price) {
+            Self::clear_lock(&env);
+            return Err(e);
+        }
+        Self::on_listing_removed(&env, &listing);
+        Self::decrement_user_active_listing_count(&env, &listing.seller);
         let purchase = Purchase {
             listing_id,
             bot_id: listing.bot_id,
@@ -458,35 +821,53 @@ impl MarketplaceContract {
             (symbol_short!("sold"), listing.seller.clone(), buyer.clone()),
             (listing_id, listing.bot_id, listing.price),
         );
+        Self::clear_lock(&env);
         Ok(())
     }
 
+    /// Cancel a listing and return the escrowed bot to its seller.
+    ///
+    /// This is the escape hatch: it is intentionally NOT blocked while the
+    /// marketplace is paused, so sellers can always retrieve escrowed bots.
+    /// Order: existence -> authorization -> state validity -> effects.
     pub fn cancel_listing(
         env: Env,
         seller: Address,
         listing_id: u64,
     ) -> Result<(), MarketplaceError> {
+        Self::check_and_set_lock(&env)?;
+
         seller.require_auth();
 
-        let mut listing: Listing = env
+        let mut listing: Listing = match env
             .storage()
             .persistent()
             .get(&DataKey::Listing(listing_id))
-            .ok_or(MarketplaceError::ListingNotFound)?;
-
-        if !listing.active {
-            return Err(MarketplaceError::ListingNotActive);
-        }
+        {
+            Some(l) => l,
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::ListingNotFound);
+            }
+        };
 
         if listing.seller != seller {
+            Self::clear_lock(&env);
             return Err(MarketplaceError::Unauthorized);
         }
 
-        let config: Config = env
-            .storage()
-            .instance()
-            .get(&DataKey::Config)
-            .ok_or(MarketplaceError::NotInitialized)?;
+        if !listing.active {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::ListingNotActive);
+        }
+
+        let config: Config = match env.storage().instance().get(&DataKey::Config) {
+            Some(c) => c,
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::NotInitialized);
+            }
+        };
 
         // Return the escrowed bot from the marketplace back to the seller.
         let marketplace = env.current_contract_address();
@@ -495,6 +876,7 @@ impl MarketplaceContract {
             .try_transfer(&listing.bot_id, &marketplace, &seller)
             .is_err()
         {
+            Self::clear_lock(&env);
             return Err(MarketplaceError::BotTransferFailed);
         }
 
@@ -509,29 +891,196 @@ impl MarketplaceContract {
             LEDGER_BUMP,
         );
 
-        // Remove from the active listings index.
-        let active: Vec<u64> = env
-            .storage()
-            .instance()
-            .get(&DataKey::ActiveListings)
-            .unwrap_or_else(|| Vec::new(&env));
-        let mut new_active: Vec<u64> = Vec::new(&env);
-        for id in active.iter() {
-            if id != listing_id {
-                new_active.push_back(id);
-            }
-        }
         env.storage()
-            .instance()
-            .set(&DataKey::ActiveListings, &new_active);
+            .persistent()
+            .remove(&DataKey::BotListing(listing.bot_id));
+
+        // The id stays in its ListingPage as a tombstone (`active == false`);
+        // `compact_page` reclaims the slot later.
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        Self::on_listing_removed(&env, &listing);
+
+        Self::decrement_user_active_listing_count(&env, &listing.seller);
 
         env.events().publish(
             (symbol_short!("cancel"), seller, listing_id),
             listing.bot_id,
         );
+        Self::clear_lock(&env);
+        Ok(())
+    }
+
+    /// Permissionless: return an expired, still-active listing's escrowed bot
+    /// to the original seller. Anyone may trigger this; the bot always returns
+    /// to the seller, never to the caller (#423).
+    pub fn reclaim_expired(env: Env, listing_id: u64) -> Result<(), MarketplaceError> {
+        Self::check_and_set_lock(&env)?;
+
+        let mut listing: Listing = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::Listing(listing_id))
+        {
+            Some(l) => l,
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::ListingNotFound);
+            }
+        };
+
+        if !listing.active {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::ListingNotActive);
+        }
+
+        if env.ledger().timestamp() <= listing.expires_at {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::ListingNotActive); // not yet expired
+        }
+
+        let config: Config = match env.storage().instance().get(&DataKey::Config) {
+            Some(c) => c,
+            None => {
+                Self::clear_lock(&env);
+                return Err(MarketplaceError::NotInitialized);
+            }
+        };
+
+        // Return the escrowed bot to the original seller, not the caller.
+        let marketplace = env.current_contract_address();
+        let bot_client = BotNFTContractClient::new(&env, &config.bot_nft);
+        if bot_client
+            .try_transfer(&listing.bot_id, &marketplace, &listing.seller)
+            .is_err()
+        {
+            Self::clear_lock(&env);
+            return Err(MarketplaceError::BotTransferFailed);
+        }
+
+        listing.active = false;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Listing(listing_id), &listing);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Listing(listing_id),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+        env.storage()
+            .persistent()
+            .remove(&DataKey::BotListing(listing.bot_id));
+
+        Self::on_listing_removed(&env, &listing);
+        Self::decrement_user_active_listing_count(&env, &listing.seller);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "reclaimed"),
+                listing.seller.clone(),
+                listing_id,
+            ),
+            listing.bot_id,
+        );
+        Self::clear_lock(&env);
+        Ok(())
+    }
+
+    /// Change the price of an active listing. Only the seller may call it, and
+    /// the new price must satisfy the same rules as `list_bot`.
+    /// Order: existence -> authorization -> state validity -> effects.
+    pub fn update_price(
+        env: Env,
+        seller: Address,
+        listing_id: u64,
+        new_price: i128,
+    ) -> Result<(), MarketplaceError> {
+        seller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let mut listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Listing(listing_id))
+            .ok_or(MarketplaceError::ListingNotFound)?;
+
+        if listing.seller != seller {
+            return Err(MarketplaceError::Unauthorized);
+        }
+
+        if !listing.active {
+            return Err(MarketplaceError::ListingNotActive);
+        }
+
+        if new_price <= 0 {
+            return Err(MarketplaceError::InvalidPrice);
+        }
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        let min_price = Self::min_price_for_currency(&env, &listing.currency, config.fee_bps);
+        if new_price < min_price {
+            return Err(MarketplaceError::PriceTooLow);
+        }
+
+        let old_price = listing.price;
+        listing.price = new_price;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Listing(listing_id), &listing);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Listing(listing_id),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+        Self::on_price_changed(&env, &listing);
+
+        env.events().publish(
+            (Symbol::new(&env, "price_upd"), seller, listing_id),
+            (old_price, new_price),
+        );
+        Ok(())
+    }
+
+    /// Deactivate any active listing for `bot_id`. Permissioned to `bot_nft` contract.
+    pub fn on_bot_moved(env: Env, bot_id: u64) -> Result<(), MarketplaceError> {
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        config.bot_nft.require_auth();
+
+        // O(1): the bot -> active listing index replaces a scan of all ids.
+        let listing_id: u64 = match env.storage().persistent().get(&DataKey::BotListing(bot_id)) {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+        if let Some(mut listing) = env
+            .storage()
+            .persistent()
+            .get::<_, Listing>(&DataKey::Listing(listing_id))
+        {
+            if listing.bot_id == bot_id && listing.active {
+                listing.active = false;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Listing(listing_id), &listing);
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::BotListing(listing.bot_id));
+                Self::on_listing_removed(&env, &listing);
+                Self::decrement_user_active_listing_count(&env, &listing.seller);
+                env.events()
+                    .publish((symbol_short!("deactive"), bot_id), listing_id);
+            }
+        }
         Ok(())
     }
 
@@ -546,56 +1095,50 @@ impl MarketplaceContract {
             .ok_or(MarketplaceError::ListingNotFound)
     }
 
-    /// Return up to `limit` active listings, skipping the first `start` entries
-    /// of the active-listings index.
+    /// Return the active listing ID for a bot, if one exists. Returns
+    /// `ListingNotFound` if the bot is not listed or its listing was cancelled/sold.
+    pub fn get_listing_for_bot(env: Env, bot_id: u64) -> Result<u64, MarketplaceError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BotListing(bot_id))
+            .ok_or(MarketplaceError::ListingNotFound)
+    }
+
+    /// Return up to `limit` active listings with id greater than `cursor`,
+    /// plus the cursor to pass to the next call (#333).
     ///
-    /// Input validation / edge-case handling (issue #120):
-    /// - `limit == 0`: a request for zero items is trivially satisfied, so we
-    ///   return an empty vec immediately rather than treating it as an error.
-    /// - `start` beyond the number of active listings: the index iteration
-    ///   simply skips every entry and yields an empty vec — no panic.
-    /// - Stale index entry (an id in `ActiveListings` whose `Listing(id)` record
-    ///   was removed from persistent storage): skipped gracefully via the
-    ///   `if let Some(l)` guard.
-    /// - An id still present in the index but whose listing has `active == false`:
-    ///   filtered out by the `if l.active` check.
+    /// `cursor` is a listing ID (0 = start), NOT a positional index, so it stays
+    /// valid when listings are cancelled, sold or compacted mid-pagination:
+    /// every active listing is visited exactly once. The scan examines at most
+    /// `limit * 4` index entries per call, so a page may be short when many
+    /// tombstones are skipped; keep paging until the returned cursor equals the
+    /// one passed in (nothing left to scan).
     ///
-    /// Every edge case degrades gracefully to an empty/partial result, so there
-    /// is no genuine failure condition to signal. The return type stays
-    /// `Vec<Listing>` (rather than `Result<..>`) to avoid needless API churn for
-    /// callers.
-    pub fn get_active_listings(env: Env, start: u64, limit: u32) -> Vec<Listing> {
+    /// - `limit == 0` returns `(empty, cursor)`.
+    /// - Inactive listings (tombstones), missing records and listings whose bot
+    ///   is no longer escrowed here are skipped.
+    pub fn get_active_listings(env: Env, cursor: u64, limit: u32) -> (Vec<Listing>, u64) {
         let mut result: Vec<Listing> = Vec::new(&env);
         if limit == 0 {
-            return result;
+            return (result, cursor);
         }
-        let active_ids: Vec<u64> = env
-            .storage()
-            .instance()
-            .get(&DataKey::ActiveListings)
-            .unwrap_or_else(|| Vec::new(&env));
+        let ids = Self::ids_after(&env, cursor, limit.saturating_mul(4));
         let marketplace = env.current_contract_address();
         let config: Option<Config> = env.storage().instance().get(&DataKey::Config);
-        let mut count: u32 = 0;
-        for (i, id) in active_ids.iter().enumerate() {
-            if (i as u64) < start {
-                continue;
-            }
-            if count >= limit {
+        let mut next = cursor;
+        for id in ids.iter() {
+            if result.len() >= limit {
                 break;
             }
+            next = id;
             if let Some(l) = env
                 .storage()
                 .persistent()
                 .get::<_, Listing>(&DataKey::Listing(id))
             {
                 if l.active {
-                    // Filter stale listings where marketplace no longer owns the bot.
-                    // This ensures a listing that became stale (e.g. via admin
-                    // transfer) stops appearing even though the `buy_bot` stale
-                    // path returns an error and the host reverts the
-                    // `active=false` write. See module docs for enumeration
-                    // design.
+                    // Skip stale listings where the marketplace no longer owns
+                    // the bot (e.g. admin transfer); see module docs.
                     if let Some(cfg) = config.as_ref() {
                         let bot_client = BotNFTContractClient::new(&env, &cfg.bot_nft);
                         match bot_client.try_get_bot(&l.bot_id) {
@@ -604,13 +1147,116 @@ impl MarketplaceContract {
                         }
                     }
                     result.push_back(l);
-                    count += 1;
                 }
             }
         }
-        result
+        (result, next)
     }
 
+    /// Permissionless: drop tombstoned (inactive / missing) ids from `page` so
+    /// the slot count reflects live listings. Cursors are id-based so this is
+    /// safe at any time. Returns the number of ids removed.
+    pub fn compact_page(env: Env, page: u32) -> u32 {
+        let key = DataKey::ListingPage(page);
+        let ids: Vec<u64> = match env.storage().persistent().get(&key) {
+            Some(v) => v,
+            None => return 0,
+        };
+        let mut kept: Vec<u64> = Vec::new(&env);
+        for id in ids.iter() {
+            let live = env
+                .storage()
+                .persistent()
+                .get::<_, Listing>(&DataKey::Listing(id))
+                .map(|l| l.active)
+                .unwrap_or(false);
+            if live {
+                kept.push_back(id);
+            }
+        }
+        let removed = ids.len() - kept.len();
+        if removed > 0 {
+            env.storage().persistent().set(&key, &kept);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
+        removed
+    }
+
+    /// Number of listing pages allocated.
+    pub fn listing_page_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PageCount)
+            .unwrap_or(0)
+    }
+
+    /// Bounded page of active listings matching optional tier and inclusive
+    /// price constraints. `cursor` is a listing ID (0 = start), as in
+    /// `get_active_listings`; at most `MAX_FILTER_SCAN` index entries are
+    /// examined and at most 50 listings returned. Returns the next cursor;
+    /// stop when it equals the cursor passed in.
+    pub fn get_listings_filtered(
+        env: Env,
+        tier: Option<BotTier>,
+        min_price: Option<i128>,
+        max_price: Option<i128>,
+        cursor: u64,
+        limit: u32,
+    ) -> (Vec<Listing>, u64) {
+        let mut result: Vec<Listing> = Vec::new(&env);
+        let bounded_limit = limit.min(50);
+        if bounded_limit == 0 {
+            return (result, cursor);
+        }
+
+        let ids = Self::ids_after(&env, cursor, MAX_FILTER_SCAN);
+        let marketplace = env.current_contract_address();
+        let config: Option<Config> = env.storage().instance().get(&DataKey::Config);
+        let mut next = cursor;
+
+        for id in ids.iter() {
+            if result.len() >= bounded_limit {
+                break;
+            }
+            next = id;
+            let Some(listing) = env
+                .storage()
+                .persistent()
+                .get::<_, Listing>(&DataKey::Listing(id))
+            else {
+                continue;
+            };
+            if !listing.active {
+                continue;
+            }
+            if let Some(expected_tier) = tier {
+                if listing.bot_tier != expected_tier {
+                    continue;
+                }
+            }
+            if let Some(minimum) = min_price {
+                if listing.price < minimum {
+                    continue;
+                }
+            }
+            if let Some(maximum) = max_price {
+                if listing.price > maximum {
+                    continue;
+                }
+            }
+            if let Some(cfg) = config.as_ref() {
+                let bot_client = BotNFTContractClient::new(&env, &cfg.bot_nft);
+                match bot_client.try_get_bot(&listing.bot_id) {
+                    Ok(Ok(bot)) if bot.owner == marketplace => {}
+                    _ => continue,
+                }
+            }
+            result.push_back(listing);
+        }
+        (result, next)
+    }
     pub fn get_user_listings(env: Env, seller: Address) -> Vec<Listing> {
         let ids: Vec<u64> = env
             .storage()
@@ -662,7 +1308,9 @@ impl MarketplaceContract {
         let old_fee_bps = config.fee_bps;
         config.fee_bps = new_fee_bps;
         env.storage().instance().set(&DataKey::Config, &config);
-        env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
         env.events().publish(
             (Symbol::new(&env, "fee_bps_upd"),),
             (old_fee_bps, new_fee_bps),
@@ -677,10 +1325,15 @@ impl MarketplaceContract {
             .get(&DataKey::Config)
             .ok_or(MarketplaceError::NotInitialized)?;
         config.admin.require_auth();
+
+        Self::probe_bot_nft(&env, &new_bot_nft)?;
+
         let old_nft = config.bot_nft.clone();
         config.bot_nft = new_bot_nft;
         env.storage().instance().set(&DataKey::Config, &config);
-        env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
         env.events().publish(
             (Symbol::new(&env, "bot_nft_upd"),),
             (old_nft, config.bot_nft.clone()),
@@ -688,17 +1341,50 @@ impl MarketplaceContract {
         Ok(())
     }
 
-    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), MarketplaceError> {
-        let mut config: Config = env
+    /// Step one of an admin transfer: the current admin nominates `new_admin`.
+    /// Nothing changes until `new_admin` calls `accept_admin`; proposing again
+    /// replaces the pending nomination.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), MarketplaceError> {
+        let config: Config = env
             .storage()
             .instance()
             .get(&DataKey::Config)
             .ok_or(MarketplaceError::NotInitialized)?;
         config.admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events().publish(
+            (Symbol::new(&env, "admin_proposed"),),
+            (config.admin, new_admin),
+        );
+        Ok(())
+    }
+
+    /// Step two of an admin transfer: the nominated address accepts and becomes
+    /// admin. Fails with `NoPendingAdmin` if nobody was proposed.
+    pub fn accept_admin(env: Env) -> Result<(), MarketplaceError> {
+        let mut config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(MarketplaceError::NoPendingAdmin)?;
+        pending.require_auth();
         let old_admin = config.admin.clone();
-        config.admin = new_admin;
+        config.admin = pending;
         env.storage().instance().set(&DataKey::Config, &config);
-        env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
         env.events().publish(
             (Symbol::new(&env, "admin_upd"),),
             (old_admin, config.admin.clone()),
@@ -706,22 +1392,762 @@ impl MarketplaceContract {
         Ok(())
     }
 
-    fn remove_active_listing(env: &Env, listing_id: u64) {
-        let active: Vec<u64> = env
+    /// The address nominated by `propose_admin`, if a transfer is pending.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Admin-only: block `list_bot`, `buy_bot` and `update_price`.
+    /// `cancel_listing` keeps working so sellers can always retrieve bots.
+    pub fn pause(env: Env) -> Result<(), MarketplaceError> {
+        let config: Config = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveListings)
-            .unwrap_or_else(|| Vec::new(env));
-        let mut new_active: Vec<u64> = Vec::new(env);
-        for id in active.iter() {
-            if id != listing_id {
-                new_active.push_back(id);
-            }
-        }
-        env.storage().instance().set(&DataKey::ActiveListings, &new_active);
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        config.admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events()
+            .publish((symbol_short!("paused"),), config.admin);
+        Ok(())
+    }
+
+    /// Admin-only: resume trading after `pause`.
+    pub fn unpause(env: Env) -> Result<(), MarketplaceError> {
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        config.admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events()
+            .publish((Symbol::new(&env, "unpaused"),), config.admin);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Admin-only: add a currency to the allowlist (#325)
+    pub fn add_allowed_currency(env: Env, currency: Address) -> Result<(), MarketplaceError> {
+        Self::add_currency(&env, currency)
+    }
+
+    /// Admin-only: remove a currency from the allowlist (#325)
+    pub fn remove_allowed_currency(env: Env, currency: Address) -> Result<(), MarketplaceError> {
+        Self::remove_currency(&env, currency)
+    }
+
+    /// Check if a currency is in the allowlist (#325)
+    pub fn is_allowed_currency(env: Env, currency: Address) -> bool {
+        Self::is_currency_allowed(&env, &currency)
+    }
+
+    /// Sales statistics for one tier (all zeros before any activity).
+    pub fn tier_stats(env: Env, tier: BotTier) -> TierStats {
+        Self::read_tier_stats(&env, tier)
+    }
+
+    /// Sales statistics for every tier, in tier order (Basic .. Diamond).
+    pub fn market_stats(env: Env) -> Vec<TierStats> {
+        let mut result: Vec<TierStats> = Vec::new(&env);
+        for tier in ALL_TIERS {
+            result.push_back(Self::read_tier_stats(&env, tier));
+        }
+        result
+    }
+
+    pub fn get_listing_cap(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ListingCap)
+            .unwrap_or(50)
+    }
+
+    pub fn set_listing_cap(env: Env, new_cap: u32) -> Result<(), MarketplaceError> {
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        config.admin.require_auth();
+
+        env.storage().instance().set(&DataKey::ListingCap, &new_cap);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events()
+            .publish((Symbol::new(&env, "listing_cap_upd"),), new_cap);
+        Ok(())
+    }
+
+    pub fn get_user_active_listing_count(env: Env, seller: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::UserActiveListingCount(seller))
+            .unwrap_or(0)
+    }
+
+    pub fn bot_nft(env: Env) -> Address {
+        let config: Config = env.storage().instance().get(&DataKey::Config).unwrap();
+        config.bot_nft
+    }
+
+    // ---------------------------------------------------------------------
+    // Offers (#425)
+    // ---------------------------------------------------------------------
+
+    /// Escrow `amount` of `currency` from `buyer` as a standing offer for
+    /// `bot_id`, open until `expires_at` (ledger timestamp, exclusive).
+    ///
+    /// The bot does not need to be listed. The offer is rejected when the
+    /// buyer already owns the bot, outright or through their own active
+    /// listing, when `currency` is not allowlisted, when `amount` is below the
+    /// currency's minimum price, or when the bot already carries
+    /// `MAX_OFFERS_PER_BOT` open offers.
+    pub fn make_offer(
+        env: Env,
+        buyer: Address,
+        bot_id: u64,
+        amount: i128,
+        currency: Address,
+        expires_at: u64,
+    ) -> Result<u64, MarketplaceError> {
+        Self::check_and_set_lock(&env)?;
+        let result = Self::make_offer_inner(&env, buyer, bot_id, amount, currency, expires_at);
+        Self::clear_lock(&env);
+        result
+    }
+
+    fn make_offer_inner(
+        env: &Env,
+        buyer: Address,
+        bot_id: u64,
+        amount: i128,
+        currency: Address,
+        expires_at: u64,
+    ) -> Result<u64, MarketplaceError> {
+        buyer.require_auth();
+        Self::require_not_paused(env)?;
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        if amount <= 0 {
+            return Err(MarketplaceError::InvalidPrice);
+        }
+        if !Self::is_currency_allowed(env, &currency) {
+            return Err(MarketplaceError::UnsupportedCurrency);
+        }
+        if amount < Self::min_price_for_currency(env, &currency, config.fee_bps) {
+            return Err(MarketplaceError::PriceTooLow);
+        }
+        if expires_at <= env.ledger().timestamp() {
+            return Err(MarketplaceError::InvalidExpiry);
+        }
+        let bot_client = BotNFTContractClient::new(env, &config.bot_nft);
+        let bot = match bot_client.try_get_bot(&bot_id) {
+            Ok(Ok(b)) => b,
+            _ => return Err(MarketplaceError::BotNotFound),
+        };
+        if Self::effective_owner(env, &bot) == buyer {
+            return Err(MarketplaceError::OfferOnOwnBot);
+        }
+        let mut bot_offers = Self::read_bot_offers(env, bot_id);
+        if bot_offers.len() >= MAX_OFFERS_PER_BOT {
+            return Err(MarketplaceError::TooManyOffers);
+        }
+
+        let offer_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextOfferId)
+            .unwrap_or(1);
+        let next_offer_id = offer_id.checked_add(1).ok_or(MarketplaceError::Overflow)?;
+
+        // Escrow the funds; the whole invocation aborts if the pull fails.
+        let token_client = token::Client::new(env, &currency);
+        if token_client
+            .try_transfer(&buyer, &env.current_contract_address(), &amount)
+            .is_err()
+        {
+            return Err(MarketplaceError::PaymentFailed);
+        }
+
+        let offer = Offer {
+            id: offer_id,
+            buyer: buyer.clone(),
+            bot_id,
+            amount,
+            currency,
+            created_at: env.ledger().timestamp(),
+            expires_at,
+            status: OfferStatus::Active,
+        };
+        Self::write_offer(env, &offer);
+        bot_offers.push_back(offer_id);
+        Self::write_bot_offers(env, bot_id, &bot_offers);
+        env.storage()
+            .instance()
+            .set(&DataKey::NextOfferId, &next_offer_id);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events().publish(
+            (symbol_short!("offered"), buyer, offer_id),
+            (bot_id, amount, expires_at),
+        );
+        Ok(offer_id)
+    }
+
+    /// Accept offer `offer_id` as `seller`: the bot moves to the buyer and the
+    /// escrowed funds are paid out in the same invocation, so neither side
+    /// can end up with both or neither.
+    ///
+    /// The seller must own the bot outright, or hold it in escrow through
+    /// their own active listing, which is deactivated as part of the sale.
+    /// The platform fee is retained in the contract (see `withdraw_fees`), the
+    /// royalty goes to the original minter unless the minter is the seller.
+    pub fn accept_offer(env: Env, seller: Address, offer_id: u64) -> Result<(), MarketplaceError> {
+        Self::check_and_set_lock(&env)?;
+        let result = Self::accept_offer_inner(&env, seller, offer_id);
+        Self::clear_lock(&env);
+        result
+    }
+
+    fn accept_offer_inner(
+        env: &Env,
+        seller: Address,
+        offer_id: u64,
+    ) -> Result<(), MarketplaceError> {
+        seller.require_auth();
+        Self::require_not_paused(env)?;
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        let mut offer = Self::read_offer(env, offer_id)?;
+        if offer.status != OfferStatus::Active {
+            return Err(MarketplaceError::OfferNotActive);
+        }
+        if env.ledger().timestamp() >= offer.expires_at {
+            return Err(MarketplaceError::OfferExpired);
+        }
+        if offer.buyer == seller {
+            return Err(MarketplaceError::SelfPurchase);
+        }
+        if !Self::is_currency_allowed(env, &offer.currency) {
+            return Err(MarketplaceError::UnsupportedCurrency);
+        }
+
+        let bot_client = BotNFTContractClient::new(env, &config.bot_nft);
+        let bot = match bot_client.try_get_bot(&offer.bot_id) {
+            Ok(Ok(b)) => b,
+            _ => return Err(MarketplaceError::BotNotFound),
+        };
+        let marketplace = env.current_contract_address();
+
+        // Resolve custody: the seller holds the bot directly, or the
+        // marketplace holds it under the seller's active listing.
+        let escrowed_listing: Option<Listing> = if bot.owner == seller {
+            None
+        } else if bot.owner == marketplace {
+            match Self::active_listing_for_bot(env, offer.bot_id) {
+                Some(l) if l.seller == seller => Some(l),
+                _ => return Err(MarketplaceError::NotBotOwner),
+            }
+        } else {
+            return Err(MarketplaceError::NotBotOwner);
+        };
+
+        let platform_fee = Self::bps_of(offer.amount, config.fee_bps)?;
+        let royalty = Self::bps_of(offer.amount, config.royalty_bps)?;
+        let pay_royalty = royalty > 0 && bot.minter != seller;
+        let mut seller_payout = offer
+            .amount
+            .checked_sub(platform_fee)
+            .and_then(|v| v.checked_sub(royalty))
+            .ok_or(MarketplaceError::Overflow)?;
+        if royalty > 0 && !pay_royalty {
+            seller_payout = seller_payout
+                .checked_add(royalty)
+                .ok_or(MarketplaceError::Overflow)?;
+        }
+
+        // Move the bot first (see `buy_bot` for the ordering rationale).
+        let from = match &escrowed_listing {
+            Some(_) => marketplace.clone(),
+            None => seller.clone(),
+        };
+        if bot_client
+            .try_transfer(&offer.bot_id, &from, &offer.buyer)
+            .is_err()
+        {
+            return Err(MarketplaceError::BotTransferFailed);
+        }
+        if let Some(mut listing) = escrowed_listing {
+            listing.active = false;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Listing(listing.id), &listing);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Listing(listing.id),
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP,
+            );
+            env.storage()
+                .persistent()
+                .remove(&DataKey::BotListing(listing.bot_id));
+            Self::on_listing_removed(env, &listing);
+            Self::decrement_user_active_listing_count(env, &listing.seller);
+        }
+
+        // Pay out of escrow. Every leg is checked so a failure aborts the
+        // whole invocation, bot transfer included.
+        let token_client = token::Client::new(env, &offer.currency);
+        if seller_payout > 0
+            && token_client
+                .try_transfer(&marketplace, &seller, &seller_payout)
+                .is_err()
+        {
+            return Err(MarketplaceError::PaymentFailed);
+        }
+        if pay_royalty
+            && token_client
+                .try_transfer(&marketplace, &bot.minter, &royalty)
+                .is_err()
+        {
+            return Err(MarketplaceError::PaymentFailed);
+        }
+        Self::accrue_fee(env, &offer.currency, platform_fee)?;
+
+        offer.status = OfferStatus::Accepted;
+        Self::write_offer(env, &offer);
+        Self::remove_bot_offer(env, offer.bot_id, offer_id);
+        Self::record_sale(env, bot.tier, offer.amount)?;
+        Self::add_user_purchase(
+            env,
+            &offer.buyer,
+            Purchase {
+                listing_id: 0,
+                bot_id: offer.bot_id,
+                seller: seller.clone(),
+                price: offer.amount,
+                currency: offer.currency.clone(),
+                purchased_at: env.ledger().timestamp(),
+            },
+        );
+        env.events().publish(
+            (symbol_short!("offer_acc"), seller, offer.buyer.clone()),
+            (offer_id, offer.bot_id, offer.amount),
+        );
+        Ok(())
+    }
+
+    /// Cancel an open offer and refund its escrow in full. Before expiry only
+    /// the offer's buyer may cancel; once `expires_at` has passed anyone may
+    /// call it (the refund always goes to the buyer), so stale escrow never
+    /// depends on the buyer coming back.
+    pub fn cancel_offer(env: Env, caller: Address, offer_id: u64) -> Result<(), MarketplaceError> {
+        Self::check_and_set_lock(&env)?;
+        let result = Self::cancel_offer_inner(&env, caller, offer_id);
+        Self::clear_lock(&env);
+        result
+    }
+
+    fn cancel_offer_inner(
+        env: &Env,
+        caller: Address,
+        offer_id: u64,
+    ) -> Result<(), MarketplaceError> {
+        caller.require_auth();
+        let mut offer = Self::read_offer(env, offer_id)?;
+        if offer.status != OfferStatus::Active {
+            return Err(MarketplaceError::OfferNotActive);
+        }
+        let expired = env.ledger().timestamp() >= offer.expires_at;
+        if !expired && caller != offer.buyer {
+            return Err(MarketplaceError::NotOfferOwner);
+        }
+        let token_client = token::Client::new(env, &offer.currency);
+        if token_client
+            .try_transfer(&env.current_contract_address(), &offer.buyer, &offer.amount)
+            .is_err()
+        {
+            return Err(MarketplaceError::PaymentFailed);
+        }
+        offer.status = OfferStatus::Cancelled;
+        Self::write_offer(env, &offer);
+        Self::remove_bot_offer(env, offer.bot_id, offer_id);
+        env.events().publish(
+            (symbol_short!("offer_cxl"), offer.buyer.clone(), offer_id),
+            (offer.bot_id, offer.amount, expired),
+        );
+        Ok(())
+    }
+
+    /// One offer by id, whatever its status.
+    pub fn get_offer(env: Env, offer_id: u64) -> Result<Offer, MarketplaceError> {
+        Self::read_offer(&env, offer_id)
+    }
+
+    /// Every open (`Active`) offer on `bot_id`, oldest first. Expired offers
+    /// stay listed until someone cancels them, so callers should compare
+    /// `expires_at` with the ledger timestamp.
+    pub fn get_offers_for_bot(env: Env, bot_id: u64) -> Vec<Offer> {
+        let ids = Self::read_bot_offers(&env, bot_id);
+        let mut out: Vec<Offer> = Vec::new(&env);
+        for id in ids.iter() {
+            if let Some(offer) = env
+                .storage()
+                .persistent()
+                .get::<_, Offer>(&DataKey::Offer(id))
+            {
+                out.push_back(offer);
+            }
+        }
+        out
+    }
+
+    // ---------------------------------------------------------------------
+    // Fee withdrawal (#426)
+    // ---------------------------------------------------------------------
+
+    /// Platform fees accrued in `currency` and still held by the contract.
+    /// Escrowed offer funds are never part of this figure.
+    pub fn fees_accrued(env: Env, currency: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Fees(currency))
+            .unwrap_or(0)
+    }
+
+    /// Admin-only: move `amount` of accrued fees in `currency` to `to`.
+    /// Bounded by `fees_accrued`, so escrowed offer funds cannot be drained.
+    pub fn withdraw_fees(
+        env: Env,
+        currency: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), MarketplaceError> {
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        config.admin.require_auth();
+        if amount <= 0 {
+            return Err(MarketplaceError::InvalidAmount);
+        }
+        let accrued = Self::fees_accrued(env.clone(), currency.clone());
+        if amount > accrued {
+            return Err(MarketplaceError::InsufficientFees);
+        }
+        let remaining = accrued
+            .checked_sub(amount)
+            .ok_or(MarketplaceError::Overflow)?;
+        let token_client = token::Client::new(&env, &currency);
+        if token_client
+            .try_transfer(&env.current_contract_address(), &to, &amount)
+            .is_err()
+        {
+            return Err(MarketplaceError::PaymentFailed);
+        }
+        Self::write_fees(&env, &currency, remaining);
+        env.events().publish(
+            (symbol_short!("fees_wd"), config.admin, to),
+            (currency, amount, remaining),
+        );
+        Ok(())
+    }
+
+    // ---- offer and fee helpers ----
+
+    /// `amount * bps / 10_000`, or `Overflow`.
+    fn bps_of(amount: i128, bps: u32) -> Result<i128, MarketplaceError> {
+        amount
+            .checked_mul(bps as i128)
+            .and_then(|v| v.checked_div(10_000))
+            .ok_or(MarketplaceError::Overflow)
+    }
+
+    /// Adds `fee` to the per-currency fee ledger (no transfer: the funds are
+    /// already in the contract's balance).
+    fn accrue_fee(env: &Env, currency: &Address, fee: i128) -> Result<(), MarketplaceError> {
+        if fee <= 0 {
+            return Ok(());
+        }
+        let total = Self::fees_accrued(env.clone(), currency.clone())
+            .checked_add(fee)
+            .ok_or(MarketplaceError::Overflow)?;
+        Self::write_fees(env, currency, total);
+        Ok(())
+    }
+
+    fn write_fees(env: &Env, currency: &Address, total: i128) {
+        let key = DataKey::Fees(currency.clone());
+        env.storage().persistent().set(&key, &total);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    /// Who can dispose of `bot`: its owner, or the seller of the active
+    /// listing that escrowed it in this contract.
+    fn effective_owner(env: &Env, bot: &BotNFT) -> Address {
+        if bot.owner == env.current_contract_address() {
+            if let Some(listing) = Self::active_listing_for_bot(env, bot.id) {
+                return listing.seller;
+            }
+        }
+        bot.owner.clone()
+    }
+
+    fn active_listing_for_bot(env: &Env, bot_id: u64) -> Option<Listing> {
+        let listing_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BotListing(bot_id))?;
+        let listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Listing(listing_id))?;
+        if listing.active {
+            Some(listing)
+        } else {
+            None
+        }
+    }
+
+    fn read_offer(env: &Env, offer_id: u64) -> Result<Offer, MarketplaceError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Offer(offer_id))
+            .ok_or(MarketplaceError::OfferNotFound)
+    }
+
+    fn write_offer(env: &Env, offer: &Offer) {
+        let key = DataKey::Offer(offer.id);
+        env.storage().persistent().set(&key, offer);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    fn read_bot_offers(env: &Env, bot_id: u64) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BotOffers(bot_id))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn write_bot_offers(env: &Env, bot_id: u64, ids: &Vec<u64>) {
+        let key = DataKey::BotOffers(bot_id);
+        if ids.is_empty() {
+            env.storage().persistent().remove(&key);
+            return;
+        }
+        env.storage().persistent().set(&key, ids);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    fn remove_bot_offer(env: &Env, bot_id: u64, offer_id: u64) {
+        let ids = Self::read_bot_offers(env, bot_id);
+        let mut kept: Vec<u64> = Vec::new(env);
+        for id in ids.iter() {
+            if id != offer_id {
+                kept.push_back(id);
+            }
+        }
+        Self::write_bot_offers(env, bot_id, &kept);
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), MarketplaceError> {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            return Err(MarketplaceError::ContractPaused);
+        }
+        Ok(())
+    }
+
+    fn read_tier_stats(env: &Env, tier: BotTier) -> TierStats {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TierStats(tier))
+            .unwrap_or(TierStats {
+                tier,
+                volume: 0,
+                sale_count: 0,
+                last_sale_price: 0,
+                floor_price: 0,
+                floor_listing_id: 0,
+            })
+    }
+
+    fn write_tier_stats(env: &Env, stats: &TierStats) {
+        let key = DataKey::TierStats(stats.tier);
+        env.storage().persistent().set(&key, stats);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    /// A new active listing can only lower the floor: one comparison.
+    fn on_listing_added(env: &Env, listing: &Listing) {
+        let mut stats = Self::read_tier_stats(env, listing.bot_tier);
+        if stats.floor_price == 0 || listing.price < stats.floor_price {
+            stats.floor_price = listing.price;
+            stats.floor_listing_id = listing.id;
+            Self::write_tier_stats(env, &stats);
+        }
+    }
+
+    /// Called after `listing` has left the active index (sold, cancelled,
+    /// deactivated). The floor is rescanned only if this listing held it.
+    fn on_listing_removed(env: &Env, listing: &Listing) {
+        let mut stats = Self::read_tier_stats(env, listing.bot_tier);
+        if stats.floor_listing_id == listing.id {
+            let (price, id) = Self::scan_floor(env, listing.bot_tier);
+            stats.floor_price = price;
+            stats.floor_listing_id = id;
+            Self::write_tier_stats(env, &stats);
+        }
+    }
+
+    /// Called after an active listing's price changed and was persisted.
+    fn on_price_changed(env: &Env, listing: &Listing) {
+        let mut stats = Self::read_tier_stats(env, listing.bot_tier);
+        if stats.floor_price == 0 || listing.price < stats.floor_price {
+            stats.floor_price = listing.price;
+            stats.floor_listing_id = listing.id;
+            Self::write_tier_stats(env, &stats);
+        } else if stats.floor_listing_id == listing.id {
+            let (price, id) = Self::scan_floor(env, listing.bot_tier);
+            stats.floor_price = price;
+            stats.floor_listing_id = id;
+            Self::write_tier_stats(env, &stats);
+        }
+    }
+
+    fn record_sale(env: &Env, tier: BotTier, price: i128) -> Result<(), MarketplaceError> {
+        let mut stats = Self::read_tier_stats(env, tier);
+        stats.volume = stats
+            .volume
+            .checked_add(price)
+            .ok_or(MarketplaceError::Overflow)?;
+        stats.sale_count = stats
+            .sale_count
+            .checked_add(1)
+            .ok_or(MarketplaceError::Overflow)?;
+        stats.last_sale_price = price;
+        Self::write_tier_stats(env, &stats);
+        Ok(())
+    }
+
+    /// Lowest price and listing id among active listings of `tier`, or
+    /// `(0, 0)` when there are none.
+    fn scan_floor(env: &Env, tier: BotTier) -> (i128, u64) {
+        let active: Vec<u64> = Self::ids_after(env, 0, u32::MAX);
+        let mut best: (i128, u64) = (0, 0);
+        for id in active.iter() {
+            if let Some(l) = env
+                .storage()
+                .persistent()
+                .get::<_, Listing>(&DataKey::Listing(id))
+            {
+                if l.active && l.bot_tier == tier && (best.0 == 0 || l.price < best.0) {
+                    best = (l.price, l.id);
+                }
+            }
+        }
+        best
+    }
+
+    /// Append `listing_id` to the last page, opening a new page when full.
+    /// Touches one bounded persistent entry regardless of total listings.
+    fn append_listing_id(env: &Env, listing_id: u64) -> Result<(), MarketplaceError> {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PageCount)
+            .unwrap_or(0);
+        let mut page_no = count.saturating_sub(1);
+        let mut page: Vec<u64> = if count == 0 {
+            Vec::new(env)
+        } else {
+            env.storage()
+                .persistent()
+                .get(&DataKey::ListingPage(page_no))
+                .unwrap_or_else(|| Vec::new(env))
+        };
+        if count == 0 || page.len() >= LISTING_PAGE_SIZE {
+            page_no = count;
+            page = Vec::new(env);
+            let next_count = count.checked_add(1).ok_or(MarketplaceError::Overflow)?;
+            env.storage()
+                .instance()
+                .set(&DataKey::PageCount, &next_count);
+        }
+        page.push_back(listing_id);
+        let key = DataKey::ListingPage(page_no);
+        env.storage().persistent().set(&key, &page);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        Ok(())
+    }
+
+    /// Up to `max` indexed listing ids strictly greater than `cursor`, in
+    /// ascending id order. Ids are appended monotonically, so pages are sorted
+    /// and an id cursor stays valid across removals and compaction.
+    fn ids_after(env: &Env, cursor: u64, max: u32) -> Vec<u64> {
+        let mut out: Vec<u64> = Vec::new(env);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PageCount)
+            .unwrap_or(0);
+        let mut p = 0u32;
+        while p < count {
+            let page: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ListingPage(p))
+                .unwrap_or_else(|| Vec::new(env));
+            p += 1;
+            match page.last() {
+                Some(last) if last > cursor => {}
+                _ => continue,
+            }
+            for id in page.iter() {
+                if id > cursor {
+                    out.push_back(id);
+                    if out.len() >= max {
+                        return out;
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn add_user_purchase(env: &Env, buyer: &Address, purchase: Purchase) {
@@ -755,6 +2181,131 @@ impl MarketplaceContract {
         // ceil(10_000 / fee_bps)
         let denom = fee_bps as i128;
         (10_000 + denom - 1) / denom
+    }
+
+    fn probe_bot_nft(env: &Env, bot_nft: &Address) -> Result<(), MarketplaceError> {
+        let bot_client = BotNFTContractClient::new(env, bot_nft);
+        match bot_client.try_admin() {
+            Ok(Ok(_)) => Ok(()),
+            _ => Err(MarketplaceError::InvalidBotNft),
+        }
+    }
+
+    fn check_and_set_lock(env: &Env) -> Result<(), MarketplaceError> {
+        if env.storage().instance().has(&DataKey::Locked) {
+            return Err(MarketplaceError::Reentrancy);
+        }
+        env.storage().instance().set(&DataKey::Locked, &true);
+        Ok(())
+    }
+
+    fn clear_lock(env: &Env) {
+        env.storage().instance().remove(&DataKey::Locked);
+    }
+
+    fn is_currency_allowed(env: &Env, currency: &Address) -> bool {
+        let allowed: Option<Vec<Address>> =
+            env.storage().instance().get(&DataKey::AllowedCurrencies);
+        if let Some(currencies) = allowed {
+            for c in currencies.iter() {
+                if c == *currency {
+                    return true;
+                }
+            }
+            false
+        } else {
+            false
+        }
+    }
+
+    fn add_currency(env: &Env, currency: Address) -> Result<(), MarketplaceError> {
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        config.admin.require_auth();
+
+        let mut allowed: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedCurrencies)
+            .unwrap_or_else(|| Vec::new(env));
+
+        for c in allowed.iter() {
+            if c == currency {
+                return Ok(());
+            }
+        }
+
+        allowed.push_back(currency.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedCurrencies, &allowed);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events()
+            .publish((Symbol::new(env, "currency_added"),), currency);
+        Ok(())
+    }
+
+    fn remove_currency(env: &Env, currency: Address) -> Result<(), MarketplaceError> {
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        config.admin.require_auth();
+
+        let allowed: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedCurrencies)
+            .unwrap_or_else(|| Vec::new(env));
+
+        let mut new_allowed: Vec<Address> = Vec::new(env);
+        for c in allowed.iter() {
+            if c != currency {
+                new_allowed.push_back(c);
+            }
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedCurrencies, &new_allowed);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events()
+            .publish((Symbol::new(env, "currency_removed"),), currency);
+        Ok(())
+    }
+
+    fn decrement_user_active_listing_count(env: &Env, seller: &Address) {
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::UserActiveListingCount(seller.clone()))
+            .unwrap_or(0);
+
+        if count > 0 {
+            let new_count = count - 1;
+            if new_count > 0 {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::UserActiveListingCount(seller.clone()), &new_count);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::UserActiveListingCount(seller.clone()),
+                    LEDGER_THRESHOLD,
+                    LEDGER_BUMP,
+                );
+            } else {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::UserActiveListingCount(seller.clone()));
+            }
+        }
     }
 }
 

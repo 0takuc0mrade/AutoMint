@@ -2,10 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   getAccrualState,
+  getAccrualConfig,
   getUserProfile,
   isRegistered,
   getUserBots,
   getAmtBalance,
+  getAmtDecimals,
+  getUserTotalRate,
 } from "@/lib/contracts";
 import { executeTransaction, type TransactionStatus } from "@/lib/transaction";
 import { getLedgerCloseTime } from "@/lib/stellar";
@@ -15,21 +18,75 @@ import { nativeToScVal } from "@stellar/stellar-sdk";
 import type { AccrualState, UserProfile } from "@/types";
 import { pollWhenVisible } from "@/lib/polling";
 import { STALE_TIME, GC_TIME, qk, DASHBOARD_POLL_MS } from "@/lib/queryKeys";
+import { trackStatus, newTxId } from "@/components/ui/TxStatus";
+import { COUNTER_TICK_MS } from "@/lib/constants";
 
-const BASIC_BOT_RATE = 1; // Basic bot accrual rate
-const UPDATE_INTERVAL = 1000; // Update every second
 const POINTS_PER_HOUR_DIVISOR = 3600; // Seconds in an hour
+
+/** Identifiers for the three on-chain registration steps. */
+export type RegisterStepId = "register" | "mint" | "accrual";
+
+export interface RegisterStep {
+  id: RegisterStepId;
+  /** Toast/UI label for the step. */
+  label: string;
+}
+
+/**
+ * The registration pipeline, in order (#452).
+ *
+ * Exported so the banner can render a stable three-step progress UI and
+ * tests can assert which steps ran.
+ */
+export const REGISTER_STEPS: readonly RegisterStep[] = [
+  { id: "register", label: "Registering user" },
+  { id: "mint", label: "Minting basic bot" },
+  { id: "accrual", label: "Starting accrual" },
+] as const;
+
+export interface RegisterProgress {
+  /** Index into {@link REGISTER_STEPS} of the step currently running. */
+  stepIndex: number;
+  /** Running step, or `"done"` once every remaining step has confirmed. */
+  step: RegisterStepId | "done";
+}
+
 export function useRegister() {
   const queryClient = useQueryClient();
   const publicKey = useWalletStore(selectPublicKey);
+  const [progress, setProgress] = useState<RegisterProgress | null>(null);
 
-  return useMutation({
+  const mutation = useMutation({
     mutationFn: async (username: string) => {
       if (!publicKey) throw new Error("Wallet not connected");
+      setProgress(null);
 
       const REGISTRY_CONTRACT_ID = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ID || "";
       const BOT_NFT_CONTRACT_ID = process.env.NEXT_PUBLIC_BOT_NFT_CONTRACT_ID || "";
       const ACCRUAL_CONTRACT_ID = process.env.NEXT_PUBLIC_ACCRUAL_CONTRACT_ID || "";
+
+      // Resume detection (#452): read the three on-chain facts in parallel
+      // and only run the steps that have not landed yet. A registration
+      // interrupted after step 1 (or 2) used to restart from step 1 and die
+      // on the registry's already-registered error, trapping the user.
+      const [registeredOnChain, bots, accrualState] = await Promise.all([
+        isRegistered(publicKey),
+        getUserBots(publicKey),
+        getAccrualState(publicKey),
+      ]);
+
+      const remaining = REGISTER_STEPS.filter((step) => {
+        switch (step.id) {
+          case "register":
+            return !registeredOnChain;
+          case "mint":
+            return bots.length === 0;
+          case "accrual":
+            return !accrualState;
+          default:
+            return false;
+        }
+      });
 
       // Helper to execute a transaction and handle toast updates
       const executeStep = async (
@@ -95,54 +152,65 @@ export function useRegister() {
         });
       };
 
-      // Step 1: Register user
-      await executeStep(
-        "Registering user",
-        REGISTRY_CONTRACT_ID,
-        "register",
-        [
-          nativeToScVal(publicKey, { type: "address" }),
-          nativeToScVal(username, { type: "string" }),
-        ]
-      );
+      // Steps run strictly sequentially — each executeStep awaits on-chain
+      // confirmation before the next step builds its transaction.
+      for (const step of remaining) {
+        const stepIndex = REGISTER_STEPS.findIndex((s) => s.id === step.id);
+        setProgress({ stepIndex, step: step.id });
 
-      // Step 2: Mint basic bot
-      await executeStep(
-        "Minting basic bot",
-        BOT_NFT_CONTRACT_ID,
-        "mint_basic",
-        [nativeToScVal(publicKey, { type: "address" })]
-      );
+        switch (step.id) {
+          case "register":
+            await executeStep(
+              step.label,
+              REGISTRY_CONTRACT_ID,
+              "register",
+              [
+                nativeToScVal(publicKey, { type: "address" }),
+                nativeToScVal(username, { type: "string" }),
+              ]
+            );
+            break;
+          case "mint":
+            await executeStep(
+              step.label,
+              BOT_NFT_CONTRACT_ID,
+              "mint_basic",
+              [nativeToScVal(publicKey, { type: "address" })]
+            );
+            break;
+          case "accrual":
+            await executeStep(
+              step.label,
+              ACCRUAL_CONTRACT_ID,
+              "start_accrual",
+              // The contract derives the rate from the user's bots (#319).
+              [nativeToScVal(publicKey, { type: "address" })]
+            );
+            break;
+        }
+      }
 
-      // Step 3: Start accrual
-      await executeStep(
-        "Starting accrual",
-        ACCRUAL_CONTRACT_ID,
-        "start_accrual",
-        [
-          nativeToScVal(publicKey, { type: "address" }),
-          nativeToScVal(BASIC_BOT_RATE, { type: "u32" }),
-        ]
-      );
-
+      setProgress({ stepIndex: REGISTER_STEPS.length, step: "done" });
       return { success: true };
     },
     onSuccess: () => {
-      // Delayed refetch to allow blockchain state to propagate
-      setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: qk.registered(publicKey) });
-        queryClient.invalidateQueries({ queryKey: qk.accrualState(publicKey) });
-        queryClient.invalidateQueries({ queryKey: qk.bots(publicKey) });
-        queryClient.invalidateQueries({ queryKey: ["botDetails"] });
-        queryClient.invalidateQueries({ queryKey: qk.profile(publicKey) });
-        queryClient.invalidateQueries({ queryKey: qk.dashboard(publicKey) });
-      }, 2000);
+      // Every step already awaited finality, so invalidate immediately —
+      // the old 2-second blind delay left the dashboard stale (#452).
+      queryClient.invalidateQueries({ queryKey: qk.registered(publicKey) });
+      queryClient.invalidateQueries({ queryKey: qk.accrualState(publicKey) });
+      queryClient.invalidateQueries({ queryKey: qk.bots(publicKey) });
+      queryClient.invalidateQueries({ queryKey: ["botDetails"] });
+      queryClient.invalidateQueries({ queryKey: qk.profile(publicKey) });
+      queryClient.invalidateQueries({ queryKey: qk.dashboard(publicKey) });
+      toast.success("Registration complete! Welcome to AutoMint!");
     },
     onError: (error: Error) => {
       // onStatus callbacks already handle error toasts
       console.error("Registration failed:", error);
     },
   });
+
+  return { ...mutation, progress };
 }
 
 /** Whether the connected wallet address is registered in the registry contract. */
@@ -192,6 +260,21 @@ export function useBots() {
   });
 }
 
+/**
+ * The accrual contract's on-chain config (currently: `points_per_amt`) —
+ * fetched once and cached with `STALE_TIME.STATIC` since it only changes
+ * on redeploy (#477). Not gated on wallet connection: it's the same for
+ * every user and can be read with the anonymous read source.
+ */
+export function useAccrualConfig() {
+  return useQuery({
+    queryKey: qk.accrualConfig(),
+    queryFn: () => getAccrualConfig(),
+    staleTime: STALE_TIME.STATIC,
+    gcTime: GC_TIME.LONG,
+  });
+}
+
 /** Accrual state (last claim timestamp, cumulative claimed points) for the connected wallet address. */
 export function useAccrualState() {
   const publicKey = useWalletStore(selectPublicKey);
@@ -218,6 +301,38 @@ export function useAmtBalance() {
     enabled: !!publicKey,
     refetchInterval: pollWhenVisible(),
     staleTime: STALE_TIME.REALTIME,
+    gcTime: GC_TIME.STANDARD,
+  });
+}
+
+/** The AMT token's decimals, read once per session from the token contract (#479). */
+export function useAmtDecimals() {
+  const publicKey = useWalletStore(selectPublicKey);
+
+  return useQuery<number>({
+    queryKey: qk.amtDecimals(),
+    queryFn: () => getAmtDecimals(publicKey ?? undefined),
+    enabled: !!publicKey,
+    staleTime: STALE_TIME.STATIC,
+    gcTime: GC_TIME.LONG,
+  });
+}
+
+/**
+ * Combined accrual rate (pts/hr) of every bot the connected wallet owns, from
+ * bot_nft `get_user_total_rate` (#490). Polled like the rest of the dashboard,
+ * so buying, selling or minting a bot changes the rate on the next poll.
+ */
+export function useUserTotalRate() {
+  const publicKey = useWalletStore(selectPublicKey);
+
+  return useQuery<bigint>({
+    queryKey: qk.userTotalRate(publicKey),
+    queryFn: () =>
+      publicKey ? getUserTotalRate(publicKey) : Promise.resolve(BigInt(0)),
+    enabled: !!publicKey,
+    refetchInterval: pollWhenVisible(),
+    staleTime: STALE_TIME.STANDARD,
     gcTime: GC_TIME.STANDARD,
   });
 }
@@ -283,6 +398,7 @@ export function useClaim() {
       const ACCRUAL_CONTRACT_ID = process.env.NEXT_PUBLIC_ACCRUAL_CONTRACT_ID || "";
       const TOKEN_CONTRACT_ID = process.env.NEXT_PUBLIC_TOKEN_CONTRACT_ID || "";
       const REGISTRY_CONTRACT_ID = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ID || "";
+      const txId = newTxId("claim");
 
       return new Promise((resolve, reject) => {
         executeTransaction({
@@ -295,6 +411,7 @@ export function useClaim() {
           ],
           sourceAddress: publicKey,
           onStatus: (status: TransactionStatus) => {
+            trackStatus(txId, "Claim", status);
             switch (status.stage) {
               case "building":
               case "simulating":
@@ -336,16 +453,52 @@ export function useClaim() {
         }).catch(reject);
       });
     },
-    onSuccess: () => {
+    onMutate: async () => {
+      // Optimistic update (#462): zero the pending counter immediately by
+      // moving last_claim_ts to now. Snapshot for rollback in onError.
+      await queryClient.cancelQueries({ queryKey: qk.accrualState(publicKey) });
+      await queryClient.cancelQueries({ queryKey: qk.dashboard(publicKey) });
+      const previousAccrual = queryClient.getQueryData(qk.accrualState(publicKey));
+      const previousDashboard = queryClient.getQueryData(qk.dashboard(publicKey));
+      const nowSec = BigInt(Math.floor(Date.now() / 1000));
+      queryClient.setQueryData(
+        qk.accrualState(publicKey),
+        (old: AccrualState | null | undefined) =>
+          old ? { ...old, last_claim_ts: nowSec, carry_points: 0n } : old
+      );
+      queryClient.setQueryData(
+        qk.dashboard(publicKey),
+        (old: DashboardData | undefined) =>
+          old
+            ? {
+                ...old,
+                accrualState: old.accrualState
+                  ? { ...old.accrualState, last_claim_ts: nowSec, carry_points: 0n }
+                  : old.accrualState,
+              }
+            : old
+      );
+      return { previousAccrual, previousDashboard };
+    },
+    onError: (
+      error: Error,
+      _variables: void,
+      context: { previousAccrual: unknown; previousDashboard: unknown } | undefined
+    ) => {
+      // Roll back to the true state on failure (#462).
+      if (context) {
+        queryClient.setQueryData(qk.accrualState(publicKey), context.previousAccrual);
+        queryClient.setQueryData(qk.dashboard(publicKey), context.previousDashboard);
+      }
+      // onStatus callback already handles error toasts
+      console.error("Claim failed:", error);
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: qk.profile(publicKey) });
       queryClient.invalidateQueries({ queryKey: qk.accrualState(publicKey) });
       queryClient.invalidateQueries({ queryKey: qk.amtBalance(publicKey) });
       queryClient.invalidateQueries({ queryKey: ["leaderboard"] });
       queryClient.invalidateQueries({ queryKey: qk.dashboard(publicKey) });
-    },
-    onError: (error: Error) => {
-      // onStatus callback already handles error toasts
-      console.error("Claim failed:", error);
     },
   });
 }
@@ -410,26 +563,44 @@ export interface AnimatedPoints {
   /** Points accrued since the last claim, recomputed each animation tick. */
   pending: bigint;
   /**
-   * The sub-threshold carry toward the next AMT (0 .. POINTS_PER_AMT - 1),
+   * The sub-threshold carry toward the next AMT (0 .. pointsPerAmt - 1),
    * taken straight from the accrual state. Shown separately as "progress to
    * next AMT" — it is NOT part of the headline, which is why folding it in
    * made the headline reset after every claim (#491, AM-084).
    */
   progressToNext: bigint;
+  /**
+   * The conversion threshold itself, fetched from the accrual contract's
+   * `config()` (#477) — never a hardcoded constant, so a redeploy that
+   * changes it updates the UI without a frontend rebuild. `undefined`
+   * while the config query is still loading; consumers should treat that
+   * the same as "don't render a percentage yet."
+   */
+  pointsPerAmt: number | undefined;
+  /**
+   * `progressToNext / pointsPerAmt`, in `[0, 1)` — ready to feed straight
+   * into a progress bar. `undefined` until the config query resolves.
+   */
+  progressToNextRatio: number | undefined;
 }
 
-export function useAnimatedPoints(ratePerHour: number = BASIC_BOT_RATE): AnimatedPoints {
+export function useAnimatedPoints(): AnimatedPoints {
   const [pending, setPending] = useState<bigint>(BigInt(0));
 
   const { data: accrualState } = useAccrualState();
   const { data: profile } = useProfile();
+  const { data: accrualConfig } = useAccrualConfig();
+  // The rate rides along on the accrual state itself (#418), so the
+  // interpolation matches the contract's own view in a single call — no
+  // separate rate query and no ratePerHour argument.
+  const ratePerHour = accrualState?.rate;
   const offsetMs = useLedgerTimeOffset();
   const offsetRef = useRef(offsetMs);
   offsetRef.current = offsetMs;
 
   useEffect(() => {
     const tick = () => {
-      if (!accrualState) {
+      if (!accrualState || ratePerHour === undefined) {
         setPending(BigInt(0));
         return;
       }
@@ -442,21 +613,30 @@ export function useAnimatedPoints(ratePerHour: number = BASIC_BOT_RATE): Animate
         return;
       }
       setPending(
-        BigInt(Math.floor((elapsedSeconds * ratePerHour) / POINTS_PER_HOUR_DIVISOR)),
+        (BigInt(elapsedSeconds) * ratePerHour) / BigInt(POINTS_PER_HOUR_DIVISOR),
       );
     };
 
     tick();
-    const interval = setInterval(tick, UPDATE_INTERVAL);
+    const interval = setInterval(tick, COUNTER_TICK_MS);
     return () => clearInterval(interval);
   }, [accrualState, ratePerHour]);
 
-  // The lifetime base is the registry point total (profile.points), NOT
-  // accrualState.total_claimed_points — that field is only the sub-threshold
-  // carry and shrinks back toward zero on every claim (#491, AM-084). When the
-  // accrual-state field `lifetime_points` lands (AM-101) it can replace this.
-  const lifetime = profile?.points ?? BigInt(0);
-  const progressToNext = accrualState?.total_claimed_points ?? BigInt(0);
+  // The headline total uses lifetime_points if available (falling back to profile?.points).
+  // progressToNext uses carry_points.
+  const lifetime = accrualState?.lifetime_points ?? profile?.points ?? BigInt(0);
+  const progressToNext = accrualState?.carry_points ?? BigInt(0);
+  const pointsPerAmt = accrualConfig?.pointsPerAmt;
+  const progressToNextRatio =
+    pointsPerAmt && pointsPerAmt > 0
+      ? Number(progressToNext) / pointsPerAmt
+      : undefined;
 
-  return { total: lifetime + pending, pending, progressToNext };
+  return {
+    total: lifetime + pending,
+    pending,
+    progressToNext,
+    pointsPerAmt,
+    progressToNextRatio,
+  };
 }

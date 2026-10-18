@@ -578,7 +578,7 @@ impl AMTToken {
     }
 
     fn validate_metadata(name: &String, symbol: &String) -> Result<(), TokenError> {
-        if name.len() == 0 || symbol.len() == 0 {
+        if name.is_empty() || symbol.is_empty() {
             return Err(TokenError::InvalidMetadata);
         }
         Ok(())

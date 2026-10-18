@@ -147,21 +147,6 @@
         {
           "function": {
             "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
-              "function_name": "accept_token_admin",
-              "args": []
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        {
-          "function": {
-            "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
               "function_name": "initialize",
               "args": [
@@ -2539,39 +2524,6 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 6277191135259896685
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 6277191135259896685
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "ledger_key_nonce": {
                 "nonce": 8370022561469687789
               }
             },
@@ -2725,7 +2677,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -2773,7 +2725,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -2821,7 +2773,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -2869,7 +2821,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -2917,7 +2869,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -2965,7 +2917,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3013,7 +2965,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3061,7 +3013,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3109,7 +3061,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3157,7 +3109,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3205,7 +3157,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3253,7 +3205,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3301,7 +3253,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3349,7 +3301,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3397,7 +3349,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3445,7 +3397,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3493,7 +3445,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3541,7 +3493,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3589,7 +3541,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3637,7 +3589,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3685,7 +3637,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3733,7 +3685,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3781,7 +3733,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3829,7 +3781,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3877,7 +3829,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3925,7 +3877,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -3973,7 +3925,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -4015,7 +3967,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -4097,7 +4049,7 @@
             },
             "ext": "v0"
           },
-          3110400
+          120960
         ]
       ],
       [
@@ -4633,18 +4585,6 @@
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                         }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Token"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                        }
                       }
                     ]
                   }
@@ -4662,7 +4602,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 875319255151014454
+                "nonce": 115220454072064130
               }
             },
             "durability": "temporary"
@@ -4677,7 +4617,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 875319255151014454
+                    "nonce": 115220454072064130
                   }
                 },
                 "durability": "temporary",
@@ -4695,7 +4635,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1194852393571756375
+                "nonce": 395965415359800683
               }
             },
             "durability": "temporary"
@@ -4710,7 +4650,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1194852393571756375
+                    "nonce": 395965415359800683
                   }
                 },
                 "durability": "temporary",
@@ -4728,7 +4668,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1345255804540566779
+                "nonce": 544730322382084885
               }
             },
             "durability": "temporary"
@@ -4743,7 +4683,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1345255804540566779
+                    "nonce": 544730322382084885
                   }
                 },
                 "durability": "temporary",
@@ -4761,7 +4701,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1501277168746644712
+                "nonce": 649072984189975589
               }
             },
             "durability": "temporary"
@@ -4776,7 +4716,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1501277168746644712
+                    "nonce": 649072984189975589
                   }
                 },
                 "durability": "temporary",
@@ -4794,7 +4734,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1506441561184340186
+                "nonce": 1161004259517476189
               }
             },
             "durability": "temporary"
@@ -4809,7 +4749,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1506441561184340186
+                    "nonce": 1161004259517476189
                   }
                 },
                 "durability": "temporary",
@@ -4827,7 +4767,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1690253666352074432
+                "nonce": 1301173170172112462
               }
             },
             "durability": "temporary"
@@ -4842,7 +4782,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1690253666352074432
+                    "nonce": 1301173170172112462
                   }
                 },
                 "durability": "temporary",
@@ -4860,7 +4800,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2578412842719982537
+                "nonce": 1768924605727919950
               }
             },
             "durability": "temporary"
@@ -4875,7 +4815,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2578412842719982537
+                    "nonce": 1768924605727919950
                   }
                 },
                 "durability": "temporary",
@@ -4893,7 +4833,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2781962168096793370
+                "nonce": 1967922937664261543
               }
             },
             "durability": "temporary"
@@ -4908,7 +4848,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2781962168096793370
+                    "nonce": 1967922937664261543
                   }
                 },
                 "durability": "temporary",
@@ -4926,7 +4866,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2917827370713594154
+                "nonce": 2140788761963629343
               }
             },
             "durability": "temporary"
@@ -4941,7 +4881,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2917827370713594154
+                    "nonce": 2140788761963629343
                   }
                 },
                 "durability": "temporary",
@@ -4959,7 +4899,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 3126073502131104533
+                "nonce": 2254425974100219774
               }
             },
             "durability": "temporary"
@@ -4974,7 +4914,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 3126073502131104533
+                    "nonce": 2254425974100219774
                   }
                 },
                 "durability": "temporary",
@@ -4992,7 +4932,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 3507645618223554847
+                "nonce": 2260266285686479847
               }
             },
             "durability": "temporary"
@@ -5007,7 +4947,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 3507645618223554847
+                    "nonce": 2260266285686479847
                   }
                 },
                 "durability": "temporary",
@@ -5025,7 +4965,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 3791811173315715839
+                "nonce": 2307661404550649928
               }
             },
             "durability": "temporary"
@@ -5040,7 +4980,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 3791811173315715839
+                    "nonce": 2307661404550649928
                   }
                 },
                 "durability": "temporary",
@@ -5058,7 +4998,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 4822409645871993625
+                "nonce": 2623024502929126324
               }
             },
             "durability": "temporary"
@@ -5073,7 +5013,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 4822409645871993625
+                    "nonce": 2623024502929126324
                   }
                 },
                 "durability": "temporary",
@@ -5091,7 +5031,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 4900321175033996277
+                "nonce": 2891388370666955040
               }
             },
             "durability": "temporary"
@@ -5106,7 +5046,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 4900321175033996277
+                    "nonce": 2891388370666955040
                   }
                 },
                 "durability": "temporary",
@@ -5124,7 +5064,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 5043854608229809201
+                "nonce": 3736142932239307322
               }
             },
             "durability": "temporary"
@@ -5139,7 +5079,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 5043854608229809201
+                    "nonce": 3736142932239307322
                   }
                 },
                 "durability": "temporary",
@@ -5157,7 +5097,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 5219976416919672547
+                "nonce": 3972104438082304464
               }
             },
             "durability": "temporary"
@@ -5172,7 +5112,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 5219976416919672547
+                    "nonce": 3972104438082304464
                   }
                 },
                 "durability": "temporary",
@@ -5190,7 +5130,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 5994256439390011320
+                "nonce": 4211405827341991149
               }
             },
             "durability": "temporary"
@@ -5205,7 +5145,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 5994256439390011320
+                    "nonce": 4211405827341991149
                   }
                 },
                 "durability": "temporary",
@@ -5223,7 +5163,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 6369051681840606601
+                "nonce": 4571470874178140630
               }
             },
             "durability": "temporary"
@@ -5238,7 +5178,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 6369051681840606601
+                    "nonce": 4571470874178140630
                   }
                 },
                 "durability": "temporary",
@@ -5256,7 +5196,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 6391496069076573377
+                "nonce": 4914054227674050081
               }
             },
             "durability": "temporary"
@@ -5271,7 +5211,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 6391496069076573377
+                    "nonce": 4914054227674050081
                   }
                 },
                 "durability": "temporary",
@@ -5289,7 +5229,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 6517132746326325848
+                "nonce": 5012940724606903311
               }
             },
             "durability": "temporary"
@@ -5304,7 +5244,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 6517132746326325848
+                    "nonce": 5012940724606903311
                   }
                 },
                 "durability": "temporary",
@@ -5322,7 +5262,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 7935298921545310989
+                "nonce": 5806905060045992000
               }
             },
             "durability": "temporary"
@@ -5337,7 +5277,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 7935298921545310989
+                    "nonce": 5806905060045992000
                   }
                 },
                 "durability": "temporary",
@@ -5355,7 +5295,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 8077058277077262192
+                "nonce": 6054449652355741849
               }
             },
             "durability": "temporary"
@@ -5370,7 +5310,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 8077058277077262192
+                    "nonce": 6054449652355741849
                   }
                 },
                 "durability": "temporary",
@@ -5388,7 +5328,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 8375915698557174338
+                "nonce": 7270604957039011794
               }
             },
             "durability": "temporary"
@@ -5403,7 +5343,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 8375915698557174338
+                    "nonce": 7270604957039011794
                   }
                 },
                 "durability": "temporary",
@@ -5421,7 +5361,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 8582780626144801259
+                "nonce": 7564072809757355283
               }
             },
             "durability": "temporary"
@@ -5436,7 +5376,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 8582780626144801259
+                    "nonce": 7564072809757355283
                   }
                 },
                 "durability": "temporary",
@@ -5454,7 +5394,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 8799288422285703394
+                "nonce": 8067048471933141837
               }
             },
             "durability": "temporary"
@@ -5469,7 +5409,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 8799288422285703394
+                    "nonce": 8067048471933141837
                   }
                 },
                 "durability": "temporary",
@@ -5487,7 +5427,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 9219847003023114248
+                "nonce": 8840537117088365198
               }
             },
             "durability": "temporary"
@@ -5502,7 +5442,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 9219847003023114248
+                    "nonce": 8840537117088365198
                   }
                 },
                 "durability": "temporary",
@@ -8720,7 +8660,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 5806905060045992000
+                "nonce": 6277191135259896685
               }
             },
             "durability": "temporary"
@@ -8735,7 +8675,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 5806905060045992000
+                    "nonce": 6277191135259896685
                   }
                 },
                 "durability": "temporary",
@@ -8753,7 +8693,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 115220454072064130
+                "nonce": 1194852393571756375
               }
             },
             "durability": "temporary"
@@ -8768,7 +8708,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 115220454072064130
+                    "nonce": 1194852393571756375
                   }
                 },
                 "durability": "temporary",
@@ -8786,7 +8726,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1301173170172112462
+                "nonce": 3126073502131104533
               }
             },
             "durability": "temporary"
@@ -8801,7 +8741,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1301173170172112462
+                    "nonce": 3126073502131104533
                   }
                 },
                 "durability": "temporary",
@@ -8819,7 +8759,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 7270604957039011794
+                "nonce": 6517132746326325848
               }
             },
             "durability": "temporary"
@@ -8834,7 +8774,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 7270604957039011794
+                    "nonce": 6517132746326325848
                   }
                 },
                 "durability": "temporary",
@@ -8852,7 +8792,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2307661404550649928
+                "nonce": 2781962168096793370
               }
             },
             "durability": "temporary"
@@ -8867,7 +8807,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2307661404550649928
+                    "nonce": 2781962168096793370
                   }
                 },
                 "durability": "temporary",
@@ -8885,7 +8825,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYRE5",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 4571470874178140630
+                "nonce": 6391496069076573377
               }
             },
             "durability": "temporary"
@@ -8900,7 +8840,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYRE5",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 4571470874178140630
+                    "nonce": 6391496069076573377
                   }
                 },
                 "durability": "temporary",
@@ -8918,7 +8858,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2ZMN",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2140788761963629343
+                "nonce": 2578412842719982537
               }
             },
             "durability": "temporary"
@@ -8933,7 +8873,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2ZMN",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2140788761963629343
+                    "nonce": 2578412842719982537
                   }
                 },
                 "durability": "temporary",
@@ -8951,7 +8891,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4BV5",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 5012940724606903311
+                "nonce": 1345255804540566779
               }
             },
             "durability": "temporary"
@@ -8966,7 +8906,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4BV5",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 5012940724606903311
+                    "nonce": 1345255804540566779
                   }
                 },
                 "durability": "temporary",
@@ -8984,7 +8924,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6J5N",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 3736142932239307322
+                "nonce": 8077058277077262192
               }
             },
             "durability": "temporary"
@@ -8999,7 +8939,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6J5N",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 3736142932239307322
+                    "nonce": 8077058277077262192
                   }
                 },
                 "durability": "temporary",
@@ -9017,7 +8957,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABB6KO",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2891388370666955040
+                "nonce": 8375915698557174338
               }
             },
             "durability": "temporary"
@@ -9032,7 +8972,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABB6KO",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2891388370666955040
+                    "nonce": 8375915698557174338
                   }
                 },
                 "durability": "temporary",
@@ -9050,7 +8990,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABDWC6",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 544730322382084885
+                "nonce": 1690253666352074432
               }
             },
             "durability": "temporary"
@@ -9065,7 +9005,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABDWC6",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 544730322382084885
+                    "nonce": 1690253666352074432
                   }
                 },
                 "durability": "temporary",
@@ -9083,7 +9023,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABFO3O",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 4914054227674050081
+                "nonce": 5994256439390011320
               }
             },
             "durability": "temporary"
@@ -9098,7 +9038,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABFO3O",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 4914054227674050081
+                    "nonce": 5994256439390011320
                   }
                 },
                 "durability": "temporary",
@@ -9116,7 +9056,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABHGT6",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2254425974100219774
+                "nonce": 1506441561184340186
               }
             },
             "durability": "temporary"
@@ -9131,7 +9071,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABHGT6",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2254425974100219774
+                    "nonce": 1506441561184340186
                   }
                 },
                 "durability": "temporary",
@@ -9149,7 +9089,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABI7IO",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2623024502929126324
+                "nonce": 6369051681840606601
               }
             },
             "durability": "temporary"
@@ -9164,7 +9104,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABI7IO",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2623024502929126324
+                    "nonce": 6369051681840606601
                   }
                 },
                 "durability": "temporary",
@@ -9182,7 +9122,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKXA6",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 649072984189975589
+                "nonce": 1501277168746644712
               }
             },
             "durability": "temporary"
@@ -9197,7 +9137,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKXA6",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 649072984189975589
+                    "nonce": 1501277168746644712
                   }
                 },
                 "durability": "temporary",
@@ -9215,7 +9155,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABMPZO",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1967922937664261543
+                "nonce": 3507645618223554847
               }
             },
             "durability": "temporary"
@@ -9230,7 +9170,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABMPZO",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1967922937664261543
+                    "nonce": 3507645618223554847
                   }
                 },
                 "durability": "temporary",
@@ -9248,7 +9188,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABOHR6",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 8840537117088365198
+                "nonce": 9219847003023114248
               }
             },
             "durability": "temporary"
@@ -9263,7 +9203,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABOHR6",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 8840537117088365198
+                    "nonce": 9219847003023114248
                   }
                 },
                 "durability": "temporary",
@@ -9281,7 +9221,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABR4OP",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 7564072809757355283
+                "nonce": 8799288422285703394
               }
             },
             "durability": "temporary"
@@ -9296,7 +9236,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABR4OP",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 7564072809757355283
+                    "nonce": 8799288422285703394
                   }
                 },
                 "durability": "temporary",
@@ -9314,7 +9254,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABTUG7",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1768924605727919950
+                "nonce": 3791811173315715839
               }
             },
             "durability": "temporary"
@@ -9329,7 +9269,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABTUG7",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1768924605727919950
+                    "nonce": 3791811173315715839
                   }
                 },
                 "durability": "temporary",
@@ -9347,7 +9287,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABVM7P",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 6054449652355741849
+                "nonce": 4822409645871993625
               }
             },
             "durability": "temporary"
@@ -9362,7 +9302,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABVM7P",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 6054449652355741849
+                    "nonce": 4822409645871993625
                   }
                 },
                 "durability": "temporary",
@@ -9380,7 +9320,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABXEX7",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 395965415359800683
+                "nonce": 7935298921545310989
               }
             },
             "durability": "temporary"
@@ -9395,7 +9335,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABXEX7",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 395965415359800683
+                    "nonce": 7935298921545310989
                   }
                 },
                 "durability": "temporary",
@@ -9413,7 +9353,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABY5MP",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2260266285686479847
+                "nonce": 5219976416919672547
               }
             },
             "durability": "temporary"
@@ -9428,7 +9368,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABY5MP",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2260266285686479847
+                    "nonce": 5219976416919672547
                   }
                 },
                 "durability": "temporary",
@@ -9446,7 +9386,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB2VE7",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 8067048471933141837
+                "nonce": 2917827370713594154
               }
             },
             "durability": "temporary"
@@ -9461,7 +9401,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB2VE7",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 8067048471933141837
+                    "nonce": 2917827370713594154
                   }
                 },
                 "durability": "temporary",
@@ -9479,7 +9419,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB4N5P",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 3972104438082304464
+                "nonce": 8582780626144801259
               }
             },
             "durability": "temporary"
@@ -9494,7 +9434,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB4N5P",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 3972104438082304464
+                    "nonce": 8582780626144801259
                   }
                 },
                 "durability": "temporary",
@@ -9512,7 +9452,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB6FV7",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 4211405827341991149
+                "nonce": 875319255151014454
               }
             },
             "durability": "temporary"
@@ -9527,7 +9467,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB6FV7",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 4211405827341991149
+                    "nonce": 875319255151014454
                   }
                 },
                 "durability": "temporary",
@@ -9545,7 +9485,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBKTY",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1161004259517476189
+                "nonce": 4900321175033996277
               }
             },
             "durability": "temporary"
@@ -9560,7 +9500,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBKTY",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1161004259517476189
+                    "nonce": 4900321175033996277
                   }
                 },
                 "durability": "temporary",
@@ -9952,10 +9892,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "admin_proposed"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                "symbol": "set_admin"
               }
             ],
             "data": {
@@ -9979,119 +9916,6 @@
               },
               {
                 "symbol": "set_admin"
-              }
-            ],
-            "data": "void"
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000005"
-              },
-              {
-                "symbol": "accept_token_admin"
-              }
-            ],
-            "data": "void"
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000003"
-              },
-              {
-                "symbol": "accept_admin"
-              }
-            ],
-            "data": "void"
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000003",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "set_admin"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-              }
-            ],
-            "data": {
-              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000003",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "accept_admin"
-              }
-            ],
-            "data": "void"
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "accept_token_admin"
               }
             ],
             "data": "void"
@@ -10625,9 +10449,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
               }
             ],
@@ -11025,9 +10846,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
@@ -11429,9 +11247,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5"
               }
             ],
@@ -11829,9 +11644,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N"
@@ -12233,9 +12045,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYRE5"
               }
             ],
@@ -12633,9 +12442,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2ZMN"
@@ -13037,9 +12843,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4BV5"
               }
             ],
@@ -13437,9 +13240,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6J5N"
@@ -13841,9 +13641,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABB6KO"
               }
             ],
@@ -14241,9 +14038,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABDWC6"
@@ -14645,9 +14439,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABFO3O"
               }
             ],
@@ -15045,9 +14836,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABHGT6"
@@ -15449,9 +15237,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABI7IO"
               }
             ],
@@ -15849,9 +15634,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKXA6"
@@ -16253,9 +16035,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABMPZO"
               }
             ],
@@ -16653,9 +16432,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABOHR6"
@@ -17057,9 +16833,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABR4OP"
               }
             ],
@@ -17457,9 +17230,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABTUG7"
@@ -17861,9 +17631,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABVM7P"
               }
             ],
@@ -18261,9 +18028,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABXEX7"
@@ -18665,9 +18429,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABY5MP"
               }
             ],
@@ -19065,9 +18826,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB2VE7"
@@ -19469,9 +19227,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB4N5P"
               }
             ],
@@ -19869,9 +19624,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB6FV7"
@@ -20273,9 +20025,6 @@
                 "symbol": "mint"
               },
               {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBKTY"
               }
             ],
@@ -20673,9 +20422,6 @@
             "topics": [
               {
                 "symbol": "mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACDC3I"

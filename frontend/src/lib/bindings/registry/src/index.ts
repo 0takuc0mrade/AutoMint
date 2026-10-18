@@ -38,7 +38,7 @@ export const networks = {
   }
 } as const
 
-export type DataKey = {tag: "UserProfile", values: readonly [string]} | {tag: "Username", values: readonly [string]} | {tag: "TopUsers", values: void} | {tag: "TotalUsers", values: void} | {tag: "Admin", values: void} | {tag: "Initialized", values: void} | {tag: "Writers", values: void};
+export type DataKey = {tag: "UserProfile", values: readonly [string]} | {tag: "Username", values: readonly [string]} | {tag: "TopUsers", values: void} | {tag: "TotalUsers", values: void} | {tag: "Admin", values: void} | {tag: "PendingAdmin", values: void} | {tag: "Initialized", values: void} | {tag: "Writers", values: void};
 
 
 export interface Writers {
@@ -72,7 +72,22 @@ export const Errors = {
   /**
    * The registered-user counter has reached `u32::MAX`.
    */
-  7: {message:"Overflow"}
+  7: {message:"Overflow"},
+
+  /**
+   * More than `MAX_USERS_BATCH` addresses were passed to `get_users_batch`.
+   */
+  8: {message:"BatchTooLarge"},
+
+  /**
+   * Negative amount passed to `add_claimed_amt`.
+   */
+  9: {message:"NegativeAmount"},
+
+  /**
+   * `accept_admin` or `cancel_admin_transfer` called with no pending transfer.
+   */
+  10: {message:"NoPendingAdmin"}
 }
 
 export interface Client {
@@ -135,6 +150,51 @@ export interface Client {
      */
     simulate?: boolean;
   }) => Promise<AssembledTransaction<Result<string>>>
+
+  /**
+   * Construct and simulate a set_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  set_admin: ({new_admin}: {new_admin: string}, options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a accept_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  accept_admin: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a cancel_admin_transfer transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  cancel_admin_transfer: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a pending_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  pending_admin: (options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Option<string>>>
+
+  /**
+   * Construct and simulate a get_rank transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  get_rank: ({user}: {user: string}, options?: {
+    fee?: number;
+    timeoutInSeconds?: number;
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<u32>>>
 
   /**
    * Construct and simulate a add_points transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -301,6 +361,28 @@ export interface Client {
   }) => Promise<AssembledTransaction<Array<UserProfile>>>
 
   /**
+   * Construct and simulate a get_users_batch transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Fetch profiles for up to `MAX_USERS_BATCH` addresses in a single call,
+   * in the same order as `addresses`. Unregistered addresses map to `None`.
+   */
+  get_users_batch: ({addresses}: {addresses: Array<string>}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<Array<Option<UserProfile>>>>>
+
+  /**
    * Construct and simulate a decrement_bot_count transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
   decrement_bot_count: ({user}: {user: string}, options?: {
@@ -358,7 +440,8 @@ export class Client extends ContractClient {
         "AAAAAQAAAAAAAAAAAAAAC1VzZXJQcm9maWxlAAAAAAYAAAAAAAAAB2FkZHJlc3MAAAAAEwAAAAAAAAAJYm90X2NvdW50AAAAAAAABAAAAAAAAAALY2xhaW1lZF9hbXQAAAAACwAAAAAAAAANcmVnaXN0ZXJlZF9hdAAAAAAAAAYAAAAAAAAADHRvdGFsX3BvaW50cwAAAAYAAAAAAAAACHVzZXJuYW1lAAAAEA==",
         "AAAAAAAAAAAAAAAPYWRkX2NsYWltZWRfYW10AAAAAAIAAAAAAAAABHVzZXIAAAATAAAAAAAAAAZhbW91bnQAAAAAAAsAAAABAAAD6QAAA+0AAAAAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
         "AAAAAAAAARtUb3AgdXNlcnMgYnkgcG9pbnRzLCBoaWdoZXN0IGZpcnN0LiBSZWFkcyB0aGUgbWFpbnRhaW5lZCBgVG9wVXNlcnNgCmxpc3QgYW5kIGh5ZHJhdGVzIGF0IG1vc3QgYG1pbihsaW1pdCwgTEVBREVSQk9BUkRfU0laRSlgIHByb2ZpbGVzLCBzbyB0aGUKY29zdCBkb2VzIG5vdCBkZXBlbmQgb24gdGhlIHRvdGFsIG51bWJlciBvZiB1c2Vycy4gRXF1YWwgdG90YWxzIGFyZQpvcmRlcmVkIGJ5IHdobyByZWFjaGVkIHRoZSB0b3RhbCBmaXJzdCAoZWFybGllciB3aW5zKSwgZGV0ZXJtaW5pc3RpY2FsbHkuAAAAAA9nZXRfbGVhZGVyYm9hcmQAAAAAAQAAAAAAAAAFbGltaXQAAAAAAAAEAAAAAQAAA+oAAAfQAAAAC1VzZXJQcm9maWxlAA==",
-        "AAAABAAAAAAAAAAAAAAADVJlZ2lzdHJ5RXJyb3IAAAAAAAAHAAAAAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAAEUFscmVhZHlSZWdpc3RlcmVkAAAAAAAAAgAAAAAAAAANVXNlcm5hbWVUYWtlbgAAAAAAAAMAAAAAAAAADU5vdFJlZ2lzdGVyZWQAAAAAAAAEAAAAAAAAAAxVbmF1dGhvcml6ZWQAAAAFAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAABgAAADNUaGUgcmVnaXN0ZXJlZC11c2VyIGNvdW50ZXIgaGFzIHJlYWNoZWQgYHUzMjo6TUFYYC4AAAAACE92ZXJmbG93AAAABw==",
+        "AAAAAAAAAI5GZXRjaCBwcm9maWxlcyBmb3IgdXAgdG8gYE1BWF9VU0VSU19CQVRDSGAgYWRkcmVzc2VzIGluIGEgc2luZ2xlIGNhbGwsCmluIHRoZSBzYW1lIG9yZGVyIGFzIGBhZGRyZXNzZXNgLiBVbnJlZ2lzdGVyZWQgYWRkcmVzc2VzIG1hcCB0byBgTm9uZWAuAAAAAAAPZ2V0X3VzZXJzX2JhdGNoAAAAAAEAAAAAAAAACWFkZHJlc3NlcwAAAAAAA+oAAAATAAAAAQAAA+kAAAPqAAAD6AAAB9AAAAALVXNlclByb2ZpbGUAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
+        "AAAABAAAAAAAAAAAAAAADVJlZ2lzdHJ5RXJyb3IAAAAAAAAIAAAAAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAAEUFscmVhZHlSZWdpc3RlcmVkAAAAAAAAAgAAAAAAAAANVXNlcm5hbWVUYWtlbgAAAAAAAAMAAAAAAAAADU5vdFJlZ2lzdGVyZWQAAAAAAAAEAAAAAAAAAAxVbmF1dGhvcml6ZWQAAAAFAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAABgAAADNUaGUgcmVnaXN0ZXJlZC11c2VyIGNvdW50ZXIgaGFzIHJlYWNoZWQgYHUzMjo6TUFYYC4AAAAACE92ZXJmbG93AAAABwAAAEdNb3JlIHRoYW4gYE1BWF9VU0VSU19CQVRDSGAgYWRkcmVzc2VzIHdlcmUgcGFzc2VkIHRvIGBnZXRfdXNlcnNfYmF0Y2hgLgAAAAANQmF0Y2hUb29MYXJnZQAAAAAAAAg=",
         "AAAAAAAAAAAAAAATZGVjcmVtZW50X2JvdF9jb3VudAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=",
         "AAAAAAAAAAAAAAATaW5jcmVtZW50X2JvdF9jb3VudAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=" ]),
       options
@@ -368,6 +451,11 @@ export class Client extends ContractClient {
     get_user: this.txFromJSON<Result<UserProfile>>,
         register: this.txFromJSON<Result<void>>,
         get_admin: this.txFromJSON<Result<string>>,
+        set_admin: this.txFromJSON<Result<void>>,
+        accept_admin: this.txFromJSON<Result<void>>,
+        cancel_admin_transfer: this.txFromJSON<Result<void>>,
+        pending_admin: this.txFromJSON<Option<string>>,
+        get_rank: this.txFromJSON<Result<u32>>,
         add_points: this.txFromJSON<Result<void>>,
         initialize: this.txFromJSON<Result<void>>,
         get_writers: this.txFromJSON<Option<Writers>>,
@@ -376,6 +464,7 @@ export class Client extends ContractClient {
         is_registered: this.txFromJSON<boolean>,
         add_claimed_amt: this.txFromJSON<Result<void>>,
         get_leaderboard: this.txFromJSON<Array<UserProfile>>,
+        get_users_batch: this.txFromJSON<Result<Array<Option<UserProfile>>>>,
         decrement_bot_count: this.txFromJSON<Result<void>>,
         increment_bot_count: this.txFromJSON<Result<void>>
   }

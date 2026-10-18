@@ -84,6 +84,22 @@ let profile = registry_client.get_user(&user);
 
 ---
 
+### get_users_batch
+
+```rust
+pub fn get_users_batch(
+    env: Env,
+    addresses: Vec<Address>,
+) -> Result<Vec<Option<UserProfile>>, RegistryError>
+```
+
+Fetch profiles for up to `MAX_USERS_BATCH` (50) addresses in a single simulation, returning one `Option<UserProfile>` per input address in the same order (`None` for unregistered addresses).
+
+Errors:
+- `BatchTooLarge`: `addresses.len() > MAX_USERS_BATCH` (50).
+
+---
+
 ### add_points
 
 ```rust
@@ -147,9 +163,12 @@ registry_client.decrement_bot_count(&user);
 pub fn add_claimed_amt(env: Env, user: Address, amount: i128) -> Result<(), RegistryError>
 ```
 
-Add `amount` to `user`'s `claimed_amt` running total, saturating on overflow. `amount` may be negative (e.g. to reverse a prior credit); `amount == 0` is a no-op that returns `Ok(())`.
+Add `amount` to `user`'s `claimed_amt` running total, saturating on overflow. `amount == 0` is a no-op that returns `Ok(())`; negative amounts are rejected with `RegistryError::NegativeAmount` so `claimed_amt` is monotonically non-decreasing.
+
+Numeric type rationale: `total_points` is `u64` (an internal non-negative counter accrued from `u64` bot rates × `u64` seconds), whereas `claimed_amt` is `i128` because token balances and transfer/mint amounts are canonically `i128` across Soroban and SEP-41 (`soroban_sdk::token`).
 
 Errors:
+- `NegativeAmount`: `amount < 0`.
 - `NotRegistered`: `user` has no profile.
 
 Example:
@@ -166,13 +185,26 @@ registry_client.add_claimed_amt(&user, &2_i128);
 pub fn get_leaderboard(env: Env, limit: u32) -> Vec<UserProfile>
 ```
 
-Return up to `limit` `UserProfile` records sorted by `total_points` descending (in-contract bubble sort, gas-bounded by the total number of registered users). `limit == 0` returns an empty vector.
+Return up to `min(limit, LEADERBOARD_SIZE)` (`LEADERBOARD_SIZE = 100`) `UserProfile` records sorted by `total_points` descending from the bounded top-N leaderboard. Ties are broken by who reached the total first. `limit == 0` returns an empty vector.
 
 Example:
 
 ```rust
 let top_10 = registry_client.get_leaderboard(&10_u32);
 ```
+
+---
+
+### get_rank
+
+```rust
+pub fn get_rank(env: Env, user: Address) -> Result<u32, RegistryError>
+```
+
+Return the 1-based leaderboard rank of `user` backed by the bounded top-N structure (`TopUsers`), or `u32::MAX` (`UNRANKED`, documented as "unranked") for registered users below the top-100 cutoff.
+
+Errors:
+- `NotRegistered`: `user` has no profile.
 
 ---
 
@@ -192,19 +224,20 @@ let count = registry_client.total_users();
 
 ---
 
-### admin
+### get_admin / set_admin / accept_admin / cancel_admin_transfer / pending_admin
 
 ```rust
-pub fn admin(env: Env) -> Result<Address, RegistryError>
+pub fn get_admin(env: Env) -> Result<Address, RegistryError>
+pub fn set_admin(env: Env, new_admin: Address) -> Result<(), RegistryError>
+pub fn accept_admin(env: Env) -> Result<(), RegistryError>
+pub fn cancel_admin_transfer(env: Env) -> Result<(), RegistryError>
+pub fn pending_admin(env: Env) -> Option<Address>
 ```
 
-Return the current admin address.
+Two-step admin transfer flow (AM-031):
+- `get_admin`: Return the current active admin address (errors with `NotInitialized` before `initialize`).
+- `set_admin`: Current admin nominates `new_admin` as `PendingAdmin` (requires current admin auth; rejects self-nomination with `Unauthorized`).
+- `accept_admin`: Nominated `PendingAdmin` accepts and becomes the active `Admin`, clearing `PendingAdmin` (requires pending admin auth; errors with `NoPendingAdmin` if none is pending).
+- `cancel_admin_transfer`: Current admin cancels a pending transfer, clearing `PendingAdmin` (requires current admin auth; errors with `NoPendingAdmin` if none is pending).
+- `pending_admin`: Returns `Some(address)` when a transfer is pending, or `None`.
 
-Errors:
-- `NotInitialized`: The registry has not been initialized.
-
-Example:
-
-```rust
-let admin = registry_client.admin();
-```

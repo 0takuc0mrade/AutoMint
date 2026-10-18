@@ -348,7 +348,12 @@ export const Errors = {
   /**
    * The registered-user counter has reached `u32::MAX`.
    */
-  7: {message:"Overflow"}
+  7: {message:"Overflow"},
+
+  /**
+   * More than `MAX_USERS_BATCH` addresses were passed to `get_users_batch`.
+   */
+  8: {message:"BatchTooLarge"}
 }
 
 export interface Client {
@@ -2109,6 +2114,28 @@ export interface Client {
   }) => Promise<AssembledTransaction<Array<UserProfile>>>
 
   /**
+   * Construct and simulate a get_users_batch transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Fetch profiles for up to `MAX_USERS_BATCH` addresses in a single call,
+   * in the same order as `addresses`. Unregistered addresses map to `None`.
+   */
+  get_users_batch: ({addresses}: {addresses: Array<string>}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<Array<Option<UserProfile>>>>>
+
+  /**
    * Construct and simulate a decrement_bot_count transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
   decrement_bot_count: ({user}: {user: string}, options?: {
@@ -2173,7 +2200,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAALc2V0X2ZlZV9icHMAAAAAAQAAAAAAAAALbmV3X2ZlZV9icHMAAAAABAAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAEE1hcmtldHBsYWNlRXJyb3I=",
         "AAAAAQAAAClTYWxlcyBzdGF0aXN0aWNzIGZvciBvbmUgYm90IHRpZXIgKCM0MzIpLgAAAAAAAAAAAAAJVGllclN0YXRzAAAAAAAABgAAADZMaXN0aW5nIGhvbGRpbmcgdGhlIGZsb29yOyBgMGAgd2hlbiBub3RoaW5nIGlzIGxpc3RlZC4AAAAAABBmbG9vcl9saXN0aW5nX2lkAAAABgAAAEZMb3dlc3QgYWN0aXZlIGxpc3RpbmcgcHJpY2UgZm9yIHRoaXMgdGllcjsgYDBgIHdoZW4gbm90aGluZyBpcyBsaXN0ZWQuAAAAAAALZmxvb3JfcHJpY2UAAAAACwAAAAAAAAAPbGFzdF9zYWxlX3ByaWNlAAAAAAsAAAAAAAAACnNhbGVfY291bnQAAAAAAAYAAAAAAAAABHRpZXIAAAfQAAAAB0JvdFRpZXIAAAAAKUN1bXVsYXRpdmUgc2FsZSB2b2x1bWUgaW4gcmF3IGJhc2UgdW5pdHMuAAAAAAAABnZvbHVtZQAAAAAACw==",
         "AAAAAAAAAINTdGVwIHR3byBvZiBhbiBhZG1pbiB0cmFuc2ZlcjogdGhlIG5vbWluYXRlZCBhZGRyZXNzIGFjY2VwdHMgYW5kIGJlY29tZXMKYWRtaW4uIEZhaWxzIHdpdGggYE5vUGVuZGluZ0FkbWluYCBpZiBub2JvZHkgd2FzIHByb3Bvc2VkLgAAAAAMYWNjZXB0X2FkbWluAAAAAAAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAEE1hcmtldHBsYWNlRXJyb3I=",
-        "AAAAAAAAAcFBY2NlcHQgb2ZmZXIgYG9mZmVyX2lkYCBhcyBgc2VsbGVyYDogdGhlIGJvdCBtb3ZlcyB0byB0aGUgYnV5ZXIgYW5kIHRoZQplc2Nyb3dlZCBmdW5kcyBhcmUgcGFpZCBvdXQgaW4gdGhlIHNhbWUgaW52b2NhdGlvbiwgc28gbmVpdGhlciBzaWRlCmNhbiBlbmQgdXAgd2l0aCBib3RoIG9yIG5laXRoZXIuCgpUaGUgc2VsbGVyIG11c3Qgb3duIHRoZSBib3Qgb3V0cmlnaHQsIG9yIGhvbGQgaXQgaW4gZXNjcm93IHRocm91Z2gKdGhlaXIgb3duIGFjdGl2ZSBsaXN0aW5nLCB3aGljaCBpcyBkZWFjdGl2YXRlZCBhcyBwYXJ0IG9mIHRoZSBzYWxlLgpUaGUgcGxhdGZvcm0gZmVlIGlzIHJldGFpbmVkIGluIHRoZSBjb250cmFjdCAoc2VlIGB3aXRoZHJhd19mZWVzYCksIHRoZQpyb3lhbHR5IGdvZXMgdG8gdGhlIG9yaWdpbmFsIG1pbnRlciB1bmxlc3MgdGhlIG1pbnRlciBpcyB0aGUgc2VsbGVyLgAAAAAAAAxhY2NlcHRfb2ZmZXIAAAACAAAAAAAAAAZzZWxsZXIAAAAAABMAAAAAAAAACG9mZmVyX2lkAAAABgAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAEE1hcmtldHBsYWNlRXJyb3I=",
+        "AAAAAAAAAcFBY2NlcHQgb2ZmZXIgYG9mZmVyX2lkYCBhcyBgc2VsbGVyYDogdGhlIGJvdCBtb3ZlcyB0byB0aGUgYnV5ZXIgYW5kIHRoZQplc2Nyb3dlZCBmdW5kcyBhcmUgcGFpZCBvdXQgaW4gdGhlIHNhbWUgaW52b2NhdGlvbiwgc28gbmVpdGhlciBzaWRlCmNhbiBlbmQgdXAgd2l0aCBib3RoIG9yIG5laXRoZXIuCgpUaGUgc2VsbGVyIG11c3Qgb3duIHRoZSBib3Qgb3V0cmlnaHQsIG9yIGhvbGQgaXQgaW4gZXNjcm93IHRocm91Z2gKdGhlaXIgb3duIGFjdGl2ZSBsaXN0aW5nLCB3aGljaCBpcyBkZWFjdGl2YXRlZCBhcyBwYXJ0IG9mIHRoZSBzYWxlLgpUaGUgcGxhdGZvcm0gZmVlIGlzIHJldGFpbmVkIGluIHRoZSBjb250cmFjdCAoc2VlIGB3aXRoZHJhd19mZWVzYCksIHRoZQpyb3lhbHR5IGdvZXMgdGhlIG9yaWdpbmFsIG1pbnRlciB1bmxlc3MgdGhlIG1pbnRlciBpcyB0aGUgc2VsbGVyLgAAAAAAAAxhY2NlcHRfb2ZmZXIAAAACAAAAAAAAAAZzZWxsZXIAAAAAABMAAAAAAAAACG9mZmVyX2lkAAAABgAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAEE1hcmtldHBsYWNlRXJyb3I=",
         "AAAAAAAAAPNDYW5jZWwgYW4gb3BlbiBvZmZlciBhbmQgcmVmdW5kIGl0cyBlc2Nyb3cgaW4gZnVsbC4gQmVmb3JlIGV4cGlyeSBvbmx5CnRoZSBvZmZlcidzIGJ1eWVyIG1heSBjYW5jZWw7IG9uY2UgYGV4cGlyZXNfYXRgIGhhcyBwYXNzZWQgYW55b25lIG1heQpjYWxsIGl0ICh0aGUgcmVmdW5kIGFsd2F5cyBnb2VzIHRvIHRoZSBidXllciksIHNvIHN0YWxlIGVzY3JvdyBuZXZlcgpkZXBlbmRzIG9uIHRoZSBidXllciBjb21pbmcgYmFjay4AAAAADGNhbmNlbF9vZmZlcgAAAAIAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAAAAAAIb2ZmZXJfaWQAAAAGAAAAAQAAA+kAAAPtAAAAAAAAB9AAAAAQTWFya2V0cGxhY2VFcnJvcg==",
         "AAAAAAAAAMNQZXJtaXNzaW9ubGVzczogZHJvcCB0b21ic3RvbmVkIChpbmFjdGl2ZSAvIG1pc3NpbmcpIGlkcyBmcm9tIGBwYWdlYCBzbwp0aGUgc2xvdCBjb3VudCByZWZsZWN0cyBsaXZlIGxpc3RpbmdzLiBDdXJzb3JzIGFyZSBpZC1iYXNlZCBzbyB0aGlzIGlzCnNhZmUgYXQgYW55IHRpbWUuIFJldHVybnMgdGhlIG51bWJlciBvZiBpZHMgcmVtb3ZlZC4AAAAADGNvbXBhY3RfcGFnZQAAAAEAAAAAAAAABHBhZ2UAAAAEAAAAAQAAAAQ=",
         "AAAAAAAAAHdQbGF0Zm9ybSBmZWVzIGFjY3J1ZWQgaW4gYGN1cnJlbmN5YCBhbmQgc3RpbGwgaGVsZCBieSB0aGUgY29udHJhY3QuCkVzY3Jvd2VkIG9mZmVyIGZ1bmRzIGFyZSBuZXZlciBwYXJ0IG9mIHRoaXMgZmlndXJlLgAAAAAMZmVlc19hY2NydWVkAAAAAQAAAAAAAAAIY3VycmVuY3kAAAATAAAAAQAAAAs=",
@@ -2251,7 +2278,8 @@ export class Client extends ContractClient {
         "AAAAAQAAAAAAAAAAAAAAC1VzZXJQcm9maWxlAAAAAAYAAAAAAAAAB2FkZHJlc3MAAAAAEwAAAAAAAAAJYm90X2NvdW50AAAAAAAABAAAAAAAAAALY2xhaW1lZF9hbXQAAAAACwAAAAAAAAANcmVnaXN0ZXJlZF9hdAAAAAAAAAYAAAAAAAAADHRvdGFsX3BvaW50cwAAAAYAAAAAAAAACHVzZXJuYW1lAAAAEA==",
         "AAAAAAAAAAAAAAAPYWRkX2NsYWltZWRfYW10AAAAAAIAAAAAAAAABHVzZXIAAAATAAAAAAAAAAZhbW91bnQAAAAAAAsAAAABAAAD6QAAA+0AAAAAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
         "AAAAAAAAARtUb3AgdXNlcnMgYnkgcG9pbnRzLCBoaWdoZXN0IGZpcnN0LiBSZWFkcyB0aGUgbWFpbnRhaW5lZCBgVG9wVXNlcnNgCmxpc3QgYW5kIGh5ZHJhdGVzIGF0IG1vc3QgYG1pbihsaW1pdCwgTEVBREVSQk9BUkRfU0laRSlgIHByb2ZpbGVzLCBzbyB0aGUKY29zdCBkb2VzIG5vdCBkZXBlbmQgb24gdGhlIHRvdGFsIG51bWJlciBvZiB1c2Vycy4gRXF1YWwgdG90YWxzIGFyZQpvcmRlcmVkIGJ5IHdobyByZWFjaGVkIHRoZSB0b3RhbCBmaXJzdCAoZWFybGllciB3aW5zKSwgZGV0ZXJtaW5pc3RpY2FsbHkuAAAAAA9nZXRfbGVhZGVyYm9hcmQAAAAAAQAAAAAAAAAFbGltaXQAAAAAAAAEAAAAAQAAA+oAAAfQAAAAC1VzZXJQcm9maWxlAA==",
-        "AAAABAAAAAAAAAAAAAAADVJlZ2lzdHJ5RXJyb3IAAAAAAAAHAAAAAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAAEUFscmVhZHlSZWdpc3RlcmVkAAAAAAAAAgAAAAAAAAANVXNlcm5hbWVUYWtlbgAAAAAAAAMAAAAAAAAADU5vdFJlZ2lzdGVyZWQAAAAAAAAEAAAAAAAAAAxVbmF1dGhvcml6ZWQAAAAFAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAABgAAADNUaGUgcmVnaXN0ZXJlZC11c2VyIGNvdW50ZXIgaGFzIHJlYWNoZWQgYHUzMjo6TUFYYC4AAAAACE92ZXJmbG93AAAABw==",
+        "AAAAAAAAAI5GZXRjaCBwcm9maWxlcyBmb3IgdXAgdG8gYE1BWF9VU0VSU19CQVRDSGAgYWRkcmVzc2VzIGluIGEgc2luZ2xlIGNhbGwsCmluIHRoZSBzYW1lIG9yZGVyIGFzIGBhZGRyZXNzZXNgLiBVbnJlZ2lzdGVyZWQgYWRkcmVzc2VzIG1hcCB0byBgTm9uZWAuAAAAAAAPZ2V0X3VzZXJzX2JhdGNoAAAAAAEAAAAAAAAACWFkZHJlc3NlcwAAAAAAA+oAAAATAAAAAQAAA+kAAAPqAAAD6AAAB9AAAAALVXNlclByb2ZpbGUAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
+        "AAAABAAAAAAAAAAAAAAADVJlZ2lzdHJ5RXJyb3IAAAAAAAAIAAAAAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAAEUFscmVhZHlSZWdpc3RlcmVkAAAAAAAAAgAAAAAAAAANVXNlcm5hbWVUYWtlbgAAAAAAAAMAAAAAAAAADU5vdFJlZ2lzdGVyZWQAAAAAAAAEAAAAAAAAAAxVbmF1dGhvcml6ZWQAAAAFAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAABgAAADNUaGUgcmVnaXN0ZXJlZC11c2VyIGNvdW50ZXIgaGFzIHJlYWNoZWQgYHUzMjo6TUFYYC4AAAAACE92ZXJmbG93AAAABwAAAEdNb3JlIHRoYW4gYE1BWF9VU0VSU19CQVRDSGAgYWRkcmVzc2VzIHdlcmUgcGFzc2VkIHRvIGBnZXRfdXNlcnNfYmF0Y2hgLgAAAAANQmF0Y2hUb29MYXJnZQAAAAAAAAg=",
         "AAAAAAAAAAAAAAATZGVjcmVtZW50X2JvdF9jb3VudAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=",
         "AAAAAAAAAAAAAAATaW5jcmVtZW50X2JvdF9jb3VudAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=" ]),
       options
@@ -2339,6 +2367,7 @@ export class Client extends ContractClient {
         is_registered: this.txFromJSON<boolean>,
         add_claimed_amt: this.txFromJSON<Result<void>>,
         get_leaderboard: this.txFromJSON<Array<UserProfile>>,
+        get_users_batch: this.txFromJSON<Result<Array<Option<UserProfile>>>>,
         decrement_bot_count: this.txFromJSON<Result<void>>,
         increment_bot_count: this.txFromJSON<Result<void>>
   }

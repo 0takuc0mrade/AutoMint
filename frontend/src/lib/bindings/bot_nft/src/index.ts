@@ -173,7 +173,12 @@ export const Errors = {
   /**
    * The registered-user counter has reached `u32::MAX`.
    */
-  7: {message:"Overflow"}
+  7: {message:"Overflow"},
+
+  /**
+   * More than `MAX_USERS_BATCH` addresses were passed to `get_users_batch`.
+   */
+  8: {message:"BatchTooLarge"}
 }
 
 export interface Client {
@@ -978,6 +983,28 @@ export interface Client {
   }) => Promise<AssembledTransaction<Array<UserProfile>>>
 
   /**
+   * Construct and simulate a get_users_batch transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Fetch profiles for up to `MAX_USERS_BATCH` addresses in a single call,
+   * in the same order as `addresses`. Unregistered addresses map to `None`.
+   */
+  get_users_batch: ({addresses}: {addresses: Array<string>}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<Array<Option<UserProfile>>>>>
+
+  /**
    * Construct and simulate a decrement_bot_count transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
   decrement_bot_count: ({user}: {user: string}, options?: {
@@ -1069,7 +1096,8 @@ export class Client extends ContractClient {
         "AAAAAQAAAAAAAAAAAAAAC1VzZXJQcm9maWxlAAAAAAYAAAAAAAAAB2FkZHJlc3MAAAAAEwAAAAAAAAAJYm90X2NvdW50AAAAAAAABAAAAAAAAAALY2xhaW1lZF9hbXQAAAAACwAAAAAAAAANcmVnaXN0ZXJlZF9hdAAAAAAAAAYAAAAAAAAADHRvdGFsX3BvaW50cwAAAAYAAAAAAAAACHVzZXJuYW1lAAAAEA==",
         "AAAAAAAAAAAAAAAPYWRkX2NsYWltZWRfYW10AAAAAAIAAAAAAAAABHVzZXIAAAATAAAAAAAAAAZhbW91bnQAAAAAAAsAAAABAAAD6QAAA+0AAAAAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
         "AAAAAAAAARtUb3AgdXNlcnMgYnkgcG9pbnRzLCBoaWdoZXN0IGZpcnN0LiBSZWFkcyB0aGUgbWFpbnRhaW5lZCBgVG9wVXNlcnNgCmxpc3QgYW5kIGh5ZHJhdGVzIGF0IG1vc3QgYG1pbihsaW1pdCwgTEVBREVSQk9BUkRfU0laRSlgIHByb2ZpbGVzLCBzbyB0aGUKY29zdCBkb2VzIG5vdCBkZXBlbmQgb24gdGhlIHRvdGFsIG51bWJlciBvZiB1c2Vycy4gRXF1YWwgdG90YWxzIGFyZQpvcmRlcmVkIGJ5IHdobyByZWFjaGVkIHRoZSB0b3RhbCBmaXJzdCAoZWFybGllciB3aW5zKSwgZGV0ZXJtaW5pc3RpY2FsbHkuAAAAAA9nZXRfbGVhZGVyYm9hcmQAAAAAAQAAAAAAAAAFbGltaXQAAAAAAAAEAAAAAQAAA+oAAAfQAAAAC1VzZXJQcm9maWxlAA==",
-        "AAAABAAAAAAAAAAAAAAADVJlZ2lzdHJ5RXJyb3IAAAAAAAAHAAAAAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAAEUFscmVhZHlSZWdpc3RlcmVkAAAAAAAAAgAAAAAAAAANVXNlcm5hbWVUYWtlbgAAAAAAAAMAAAAAAAAADU5vdFJlZ2lzdGVyZWQAAAAAAAAEAAAAAAAAAAxVbmF1dGhvcml6ZWQAAAAFAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAABgAAADNUaGUgcmVnaXN0ZXJlZC11c2VyIGNvdW50ZXIgaGFzIHJlYWNoZWQgYHUzMjo6TUFYYC4AAAAACE92ZXJmbG93AAAABw==",
+        "AAAAAAAAAI5GZXRjaCBwcm9maWxlcyBmb3IgdXAgdG8gYE1BWF9VU0VSU19CQVRDSGAgYWRkcmVzc2VzIGluIGEgc2luZ2xlIGNhbGwsCmluIHRoZSBzYW1lIG9yZGVyIGFzIGBhZGRyZXNzZXNgLiBVbnJlZ2lzdGVyZWQgYWRkcmVzc2VzIG1hcCB0byBgTm9uZWAuAAAAAAAPZ2V0X3VzZXJzX2JhdGNoAAAAAAEAAAAAAAAACWFkZHJlc3NlcwAAAAAAA+oAAAATAAAAAQAAA+kAAAPqAAAD6AAAB9AAAAALVXNlclByb2ZpbGUAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
+        "AAAABAAAAAAAAAAAAAAADVJlZ2lzdHJ5RXJyb3IAAAAAAAAIAAAAAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAAEUFscmVhZHlSZWdpc3RlcmVkAAAAAAAAAgAAAAAAAAANVXNlcm5hbWVUYWtlbgAAAAAAAAMAAAAAAAAADU5vdFJlZ2lzdGVyZWQAAAAAAAAEAAAAAAAAAAxVbmF1dGhvcml6ZWQAAAAFAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAABgAAADNUaGUgcmVnaXN0ZXJlZC11c2VyIGNvdW50ZXIgaGFzIHJlYWNoZWQgYHUzMjo6TUFYYC4AAAAACE92ZXJmbG93AAAABwAAAEdNb3JlIHRoYW4gYE1BWF9VU0VSU19CQVRDSGAgYWRkcmVzc2VzIHdlcmUgcGFzc2VkIHRvIGBnZXRfdXNlcnNfYmF0Y2hgLgAAAAANQmF0Y2hUb29MYXJnZQAAAAAAAAg=",
         "AAAAAAAAAAAAAAATZGVjcmVtZW50X2JvdF9jb3VudAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=",
         "AAAAAAAAAAAAAAATaW5jcmVtZW50X2JvdF9jb3VudAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=" ]),
       options
@@ -1114,6 +1142,7 @@ export class Client extends ContractClient {
         is_registered: this.txFromJSON<boolean>,
         add_claimed_amt: this.txFromJSON<Result<void>>,
         get_leaderboard: this.txFromJSON<Array<UserProfile>>,
+        get_users_batch: this.txFromJSON<Result<Array<Option<UserProfile>>>>,
         decrement_bot_count: this.txFromJSON<Result<void>>,
         increment_bot_count: this.txFromJSON<Result<void>>
   }

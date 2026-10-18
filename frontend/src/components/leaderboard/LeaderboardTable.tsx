@@ -39,6 +39,11 @@ export interface LeaderboardTableProps {
    * shows that user's lifetime accrued points.
    */
   accrualStates?: Record<string, AccrualState | null> | undefined;
+  /**
+   * User profiles per address, fetched for all rows in a single batch call
+   * (`useProfiles`). Used to hydrate usernames without per-row `get_user` lookups.
+   */
+  profiles?: Record<string, UserProfile | null> | undefined;
 }
 
 const RANK_ICON: Record<number, { icon: string; color: string; label: string }> = {
@@ -122,6 +127,7 @@ function LeaderboardTableComponent({
   currentAddress,
   currentUserRank,
   accrualStates,
+  profiles,
 }: LeaderboardTableProps) {
   if (!users || users.length === 0) {
     return (
@@ -177,6 +183,8 @@ function LeaderboardTableComponent({
               normalizedCurrentAddress !== null &&
               user.address.toLowerCase() === normalizedCurrentAddress;
             const rankMeta = RANK_ICON[user.rank];
+            const displayUsername =
+              profiles?.[user.address]?.username || user.username || `Trader #${user.rank}`;
 
             return (
               <motion.tr
@@ -220,7 +228,7 @@ function LeaderboardTableComponent({
                     <span
                       className={clsx("font-medium", isCurrentUser ? "text-gold" : "text-text")}
                     >
-                      {user.username || `Trader #${user.rank}`}
+                      {displayUsername}
                     </span>
                     {isCurrentUser && (
                       <span className="rounded-full bg-gold/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gold">
@@ -268,11 +276,13 @@ function LeaderboardTableComponent({
               <td className="px-2 py-3 font-bold sm:px-4">
                 {pinnedRank.rank === null ? (
                   <span className="text-xs font-semibold uppercase tracking-wide text-muted">
-                    Unranked
+                    Not in top 100
+                    <span className="sr-only">Unranked</span>
                   </span>
                 ) : (
                   <span className="text-gold">
                     <span aria-hidden="true">#{pinnedRank.rank}</span>
+                    <span className="sr-only">You are #{pinnedRank.rank}</span>
                     <span className="sr-only">Your rank {pinnedRank.rank}</span>
                   </span>
                 )}

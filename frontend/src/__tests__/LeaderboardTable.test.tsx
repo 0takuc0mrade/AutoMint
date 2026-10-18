@@ -94,6 +94,19 @@ describe('LeaderboardTable Component', () => {
     expect(screen.getByText('Trader #3')).toBeInTheDocument();
   });
 
+  it('hydrates row usernames from batch profiles map when provided', () => {
+    const users: LeaderboardUser[] = [{ rank: 1, address: 'GABC12345678', points: 500n, username: '' }];
+    render(
+      <LeaderboardTable
+        users={users}
+        profiles={{
+          GABC12345678: { address: 'GABC12345678', username: 'batch_alice', points: 500n },
+        }}
+      />,
+    );
+    expect(screen.getByText('batch_alice')).toBeInTheDocument();
+  });
+
   it('highlights current user row with You badge', () => {
     render(<LeaderboardTable users={mockUsers} currentAddress={mockUsers[0].address} />);
     expect(screen.getByText('You')).toBeInTheDocument();
@@ -166,6 +179,7 @@ describe('LeaderboardTable Component', () => {
       const pinned = screen.getByTestId('current-user-rank-row');
       expect(pinned).toBeInTheDocument();
       expect(within(pinned).getByText('#312')).toBeInTheDocument();
+      expect(within(pinned).getByText('You are #312')).toBeInTheDocument();
       expect(within(pinned).getByText('dave')).toBeInTheDocument();
       expect(within(pinned).getByText('42')).toBeInTheDocument();
       expect(within(pinned).getByText('8 points to reach #311')).toBeInTheDocument();
@@ -218,6 +232,7 @@ describe('LeaderboardTable Component', () => {
       );
 
       const pinned = screen.getByTestId('current-user-rank-row');
+      expect(within(pinned).getByText('Not in top 100')).toBeInTheDocument();
       expect(within(pinned).getByText('Unranked')).toBeInTheDocument();
       expect(within(pinned).getByText('Claim points to enter the rankings')).toBeInTheDocument();
       expect(within(pinned).queryByText(/^#/)).not.toBeInTheDocument();

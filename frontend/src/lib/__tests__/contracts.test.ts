@@ -50,6 +50,8 @@ import {
   isRegistered,
   getTotalUsers,
   getUserProfile,
+  getUsersBatch,
+  MAX_USERS_BATCH,
   getAccrualState,
   getLeaderboard,
   getActiveListings,
@@ -248,6 +250,66 @@ describe("getUserProfile", () => {
       new Error("Simulation failed for get_user: Error(Contract, #5)")
     );
     await expect(getUserProfile("GUSER")).rejects.toThrow("Error(Contract, #5)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getUsersBatch
+// ---------------------------------------------------------------------------
+describe("getUsersBatch", () => {
+  it("returns [] without making an RPC call when addresses is empty", async () => {
+    await expect(getUsersBatch([])).resolves.toEqual([]);
+    expect(mockSimulate).not.toHaveBeenCalled();
+  });
+
+  it("returns 50 slots in order with null for unregistered addresses in a single RPC call", async () => {
+    const addresses = Array.from({ length: MAX_USERS_BATCH }, (_, i) => `GUSER_${i}`);
+    const rawBatch = addresses.map((addr, i) =>
+      i % 2 === 0
+        ? {
+            address: addr,
+            username: `user_${i}`,
+            total_points: BigInt(i * 10),
+            claimed_amt: 0n,
+            registered_at: 1_700_000_000,
+            bot_count: 1,
+          }
+        : null
+    );
+    mockSimulate.mockResolvedValueOnce(rawBatch);
+
+    const result = await getUsersBatch(addresses);
+
+    expect(mockSimulate).toHaveBeenCalledTimes(1);
+    expect(mockSimulate).toHaveBeenCalledWith(
+      expect.any(String),
+      "get_users_batch",
+      expect.any(Array),
+      "GUSER_0"
+    );
+    expect(result).toHaveLength(50);
+    expect(result[0]).toMatchObject({ address: "GUSER_0", username: "user_0", points: 0n });
+    expect(result[1]).toBeNull();
+    expect(result[48]).toMatchObject({ address: "GUSER_48", username: "user_48", points: 480n });
+    expect(result[49]).toBeNull();
+  });
+
+  it("throws when more than MAX_USERS_BATCH (50) addresses are passed", async () => {
+    const tooMany = Array.from({ length: MAX_USERS_BATCH + 1 }, (_, i) => `GUSER_${i}`);
+    await expect(getUsersBatch(tooMany)).rejects.toThrow(/at most 50 addresses/);
+    expect(mockSimulate).not.toHaveBeenCalled();
+  });
+
+  it("throws when the contract returns a non-array", async () => {
+    mockSimulate.mockResolvedValueOnce(null);
+    await expect(getUsersBatch(["GUSER"])).rejects.toThrow(
+      "get_users_batch returned unexpected type"
+    );
+  });
+
+  it("propagates RPC/contract simulation errors", async () => {
+    mockSimulate.mockRejectedValueOnce(new Error("rpc down"));
+    await expect(getUsersBatch(["GUSER"])).rejects.toThrow("rpc down");
   });
 });
 

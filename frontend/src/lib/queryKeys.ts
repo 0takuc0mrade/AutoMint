@@ -61,6 +61,7 @@ export const GC_TIME = {
 export const qk = {
   registered: (address: string | null): QueryKey => ["registered", address],
   profile: (address: string | null): QueryKey => ["profile", address],
+  profiles: (addresses: string[]): QueryKey => ["profiles", addresses.join(",")],
   bots: (address: string | null): QueryKey => ["bots", address],
   /**
    * Nested under `bots` because the total rate is derived from bot ownership:

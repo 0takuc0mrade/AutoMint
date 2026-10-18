@@ -346,7 +346,7 @@ impl AccrualContract {
         Ok(())
     }
 
-    pub fn pending_points(env: Env, user: Address) -> Result<u64, AccrualError> {
+    pub fn pending_points(env: Env, user: Address) -> Result<u128, AccrualError> {
         let accrual: UserAccrual = env
             .storage()
             .persistent()
@@ -510,7 +510,7 @@ impl AccrualContract {
         user: Address,
         token_contract: Address,
         registry: Address,
-    ) -> Result<u64, AccrualError> {
+    ) -> Result<i128, AccrualError> {
         user.require_auth();
         require_unfrozen(&env, &user)?;
 
@@ -557,8 +557,9 @@ impl AccrualContract {
         let updated_accrual = UserAccrual {
             user: accrual.user,
             rate: accrual.rate,
-            last_claim_ts: next_last_claim_ts,
-            total_claimed_points: remaining_points,
+            last_claim_ts: current_ts,
+            carry_points: remaining_carry,
+            lifetime_points: updated_lifetime,
             started_at: accrual.started_at,
             leftover,
         };
@@ -617,7 +618,10 @@ impl AccrualContract {
             (pending, remaining_carry, updated_lifetime),
         );
 
-        Ok(pending)
+        // Release the guard on the success path; a failed invocation rolls
+        // the temporary entry back on its own.
+        env.storage().temporary().remove(&DataKey::ReentrancyGuard);
+        Ok(pending as i128)
     }
 
     pub fn set_points_per_amt(env: Env, points_per_amt: u64) -> Result<(), AccrualError> {
@@ -644,9 +648,13 @@ impl AccrualContract {
             return Err(AccrualError::InvalidConfig);
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Config, &Config { points_per_amt });
+        env.storage().instance().set(
+            &DataKey::Config,
+            &Config {
+                points_per_amt,
+                amt_scale: current_config.amt_scale,
+            },
+        );
 
         env.events().publish(
             (symbol_short!("cfg_upd"), admin),

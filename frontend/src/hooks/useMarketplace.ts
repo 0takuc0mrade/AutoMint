@@ -14,6 +14,7 @@ import { pollWhenVisible } from "@/lib/polling";
 import { STALE_TIME, GC_TIME, qk } from "@/lib/queryKeys";
 import { trackStatus, newTxId } from "@/components/ui/TxStatus";
 import type { DashboardData } from "./useAccrual";
+export { useProfiles } from "./useProfiles";
 
 export function useBuyBot() {
   const queryClient = useQueryClient();

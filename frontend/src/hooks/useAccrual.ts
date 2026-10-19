@@ -246,6 +246,8 @@ export function useProfile() {
   });
 }
 
+export { useProfiles } from "./useProfiles";
+
 /** Bot IDs owned by the connected wallet address, from the bot_nft contract. */
 export function useBots() {
   const publicKey = useWalletStore(selectPublicKey);

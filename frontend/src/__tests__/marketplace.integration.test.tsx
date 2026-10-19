@@ -13,7 +13,7 @@
 
 import React from "react";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import type { BotNFT, MarketplaceListing } from "@/types";
+import type { BotNFT, MarketplaceListing, UserProfile } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Mock Zustand wallet store
@@ -89,6 +89,15 @@ const mockBotDetails = {
 
 jest.mock("@/hooks/useBotDetails", () => ({
   useAllBotDetails: () => ({ data: mockBotDetails.bots }),
+}));
+
+const mockUseProfiles = jest.fn<
+  { data: Record<string, UserProfile | null> | undefined },
+  [string[]]
+>();
+
+jest.mock("@/hooks/useProfiles", () => ({
+  useProfiles: (addresses: string[]) => mockUseProfiles(addresses),
 }));
 
 // ---------------------------------------------------------------------------
@@ -174,6 +183,33 @@ describe("Marketplace Page Integration (#499)", () => {
     mockMarketplace.myRefetching = false;
     mockBots.botIds = [];
     mockBotDetails.bots = [];
+    mockUseProfiles.mockReturnValue({ data: undefined });
+  });
+
+  it("fetches seller profiles in a single useProfiles batch call and displays usernames", () => {
+    mockMarketplace.allListings = [GOLD_LISTING, BASIC_LISTING];
+    mockBotDetails.bots = [GOLD_BOT, BASIC_BOT];
+    mockUseProfiles.mockReturnValue({
+      data: {
+        [GOLD_LISTING.seller]: {
+          address: GOLD_LISTING.seller,
+          username: "gold_seller",
+          points: 500n,
+        },
+        [BASIC_LISTING.seller]: null,
+      },
+    });
+
+    render(<MarketplacePage />);
+
+    // One batch profile hook call with the unique seller addresses for all rows
+    expect(mockUseProfiles).toHaveBeenCalledWith([
+      GOLD_LISTING.seller,
+      BASIC_LISTING.seller,
+    ]);
+    // Registered seller shows username; unregistered seller falls back to truncated address
+    expect(screen.getByTestId("listing-seller-10")).toHaveTextContent("gold_seller");
+    expect(screen.getByTestId("listing-seller-11")).toHaveTextContent("GOTHER...8888");
   });
 
   it("renders header, tabs, and active listings for a disconnected visitor", () => {

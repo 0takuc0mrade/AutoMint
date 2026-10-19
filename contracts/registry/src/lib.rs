@@ -25,12 +25,26 @@ pub enum DataKey {
     PageCount,
     TotalUsers,
     Admin,
+    PendingAdmin,
     Initialized,
     // Authorized writer set (accrual + bot_nft) for #318 gating.
     Writers,
 }
 
 // #39: Define UserProfile struct
+/// Per-user profile stored in persistent storage.
+///
+/// # Numeric type rationale (`total_points: u64` vs `claimed_amt: i128`)
+/// - `total_points` is `u64`: points are a non-negative internal accounting
+///   counter accrued from bot rates (`u64` points/sec × elapsed `u64` seconds)
+///   and never participate in SEP-41 token arithmetic.
+/// - `claimed_amt` stays `i128`: across Soroban and SEP-41 (`soroban_sdk::token`),
+///   token balances and transfer/mint amounts are canonically `i128` (scaled by
+///   `10^decimals`). Keeping `claimed_amt` as `i128` matches the AMT token
+///   contract's `mint`/`balance` signature without narrowing casts, while
+///   [`RegistryContract::add_claimed_amt`] rejects negative values with
+///   [`RegistryError::NegativeAmount`] so the cumulative claimed total is
+///   provably monotonic.
 #[derive(Clone, Debug)]
 #[contracttype]
 pub struct UserProfile {
@@ -86,6 +100,13 @@ const LEDGER_THRESHOLD: u32 = 103680;
 
 /// Maximum number of users tracked by the leaderboard (#332).
 pub const LEADERBOARD_SIZE: u32 = 100;
+
+/// Sentinel returned by [`RegistryContract::get_rank`] when a registered user
+/// falls below the top-`LEADERBOARD_SIZE` cutoff ("unranked").
+pub const UNRANKED: u32 = u32::MAX;
+
+/// Maximum number of addresses a single `get_users_batch` call accepts.
+pub const MAX_USERS_BATCH: u32 = 50;
 
 #[contract]
 pub struct RegistryContract;
@@ -272,6 +293,26 @@ impl RegistryContract {
             .ok_or(RegistryError::NotRegistered)
     }
 
+    /// Fetch profiles for up to `MAX_USERS_BATCH` addresses in a single call,
+    /// in the same order as `addresses`. Unregistered addresses map to `None`.
+    pub fn get_users_batch(
+        env: Env,
+        addresses: Vec<Address>,
+    ) -> Result<Vec<Option<UserProfile>>, RegistryError> {
+        if addresses.len() > MAX_USERS_BATCH {
+            return Err(RegistryError::BatchTooLarge);
+        }
+        let mut profiles: Vec<Option<UserProfile>> = Vec::new(&env);
+        for address in addresses.iter() {
+            let profile = env
+                .storage()
+                .persistent()
+                .get::<_, UserProfile>(&DataKey::UserProfile(address));
+            profiles.push_back(profile);
+        }
+        Ok(profiles)
+    }
+
     // #318: Configure the authorized writer set. Admin-only, idempotent. Off by
     // default until called, then only the configured addresses may mutate gated
     // fields.
@@ -425,9 +466,16 @@ impl RegistryContract {
         Ok(())
     }
 
+    /// Add newly claimed AMT (in token base units, `i128` per SEP-41 convention)
+    /// to `user`'s cumulative `claimed_amt`. Rejects negative amounts with
+    /// [`RegistryError::NegativeAmount`] so `claimed_amt` is monotonically
+    /// non-decreasing.
     pub fn add_claimed_amt(env: Env, user: Address, amount: i128) -> Result<(), RegistryError> {
         // #318: only the configured accrual writer may mutate claimed amounts.
         Self::require_accrual(&env)?;
+        if amount < 0 {
+            return Err(RegistryError::NegativeAmount);
+        }
         // SECURITY NOTE: This function modifies user state. It should only be called
         // from the accrual contract (which has already verified user authorization).
         // In a production deployment, consider validating caller identity.
@@ -559,6 +607,28 @@ impl RegistryContract {
         result
     }
 
+    /// Return the 1-based leaderboard rank of `user` from the bounded top-N
+    /// structure (`TopUsers`), or `u32::MAX` ([`UNRANKED`], documented as
+    /// "unranked") when `user` is registered but sits below the
+    /// top-`LEADERBOARD_SIZE` cutoff. Returns [`RegistryError::NotRegistered`]
+    /// if `user` has not registered.
+    pub fn get_rank(env: Env, user: Address) -> Result<u32, RegistryError> {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::UserProfile(user.clone()))
+        {
+            return Err(RegistryError::NotRegistered);
+        }
+        let top = Self::load_top(&env);
+        for (idx, (addr, _)) in (0_u32..).zip(top.iter()) {
+            if addr == user {
+                return Ok(idx + 1);
+            }
+        }
+        Ok(UNRANKED)
+    }
+
     // Missing record (queried before initialize()) correctly defaults to 0 —
     // zero registered users is the true state, not an error.
     pub fn total_users(env: Env) -> u32 {
@@ -651,6 +721,106 @@ impl RegistryContract {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(RegistryError::NotInitialized)
+    }
+
+    /// Step one of a two-step admin transfer (AM-031): the current admin
+    /// nominates `new_admin` as the pending admin. The active admin does not
+    /// change until `new_admin` calls [`Self::accept_admin`]. Proposing again
+    /// replaces the pending nomination; self-nomination is rejected with
+    /// [`RegistryError::Unauthorized`].
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), RegistryError> {
+        if !env.storage().instance().has(&DataKey::Initialized) {
+            return Err(RegistryError::NotInitialized);
+        }
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(RegistryError::NotInitialized)?;
+        current_admin.require_auth();
+
+        if new_admin == current_admin {
+            return Err(RegistryError::Unauthorized);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events().publish(
+            (symbol_short!("set_admin"),),
+            (current_admin, new_admin),
+        );
+        Ok(())
+    }
+
+    /// Step two of a two-step admin transfer (AM-031): the nominated pending
+    /// admin accepts and becomes the active admin. Fails with
+    /// [`RegistryError::NoPendingAdmin`] if no transfer is pending.
+    pub fn accept_admin(env: Env) -> Result<(), RegistryError> {
+        if !env.storage().instance().has(&DataKey::Initialized) {
+            return Err(RegistryError::NotInitialized);
+        }
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(RegistryError::NotInitialized)?;
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(RegistryError::NoPendingAdmin)?;
+        pending.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events().publish(
+            (symbol_short!("adm_acpt"),),
+            (current_admin, pending),
+        );
+        Ok(())
+    }
+
+    /// Cancel an in-flight admin transfer (AM-031). Only the current admin may
+    /// cancel; fails with [`RegistryError::NoPendingAdmin`] if no transfer is
+    /// pending.
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), RegistryError> {
+        if !env.storage().instance().has(&DataKey::Initialized) {
+            return Err(RegistryError::NotInitialized);
+        }
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(RegistryError::NotInitialized)?;
+        current_admin.require_auth();
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(RegistryError::NoPendingAdmin)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events().publish(
+            (symbol_short!("adm_cncl"),),
+            (current_admin, pending),
+        );
+        Ok(())
+    }
+
+    /// Returns the address nominated by [`Self::set_admin`], if a transfer is
+    /// currently pending.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 }
 
@@ -798,15 +968,84 @@ mod test {
         assert_eq!(client.get_user(&user).claimed_amt, 1500);
     }
 
-    // #40: Test add_claimed_amt with negative amounts
+    // #40: Test add_claimed_amt with negative amounts fails with NegativeAmount
     #[test]
     fn test_add_claimed_amt_negative() {
         let (env, _admin, client) = setup();
         let user = Address::generate(&env);
         client.register(&user, &String::from_str(&env, "Echo"));
         client.add_claimed_amt(&user, &1000_i128);
-        client.add_claimed_amt(&user, &-300_i128);
-        assert_eq!(client.get_user(&user).claimed_amt, 700);
+        assert_eq!(
+            client.try_add_claimed_amt(&user, &-300_i128),
+            Err(Ok(RegistryError::NegativeAmount))
+        );
+        assert_eq!(
+            client.try_add_claimed_amt(&user, &-1_i128),
+            Err(Ok(RegistryError::NegativeAmount))
+        );
+        assert_eq!(
+            client.try_add_claimed_amt(&user, &i128::MIN),
+            Err(Ok(RegistryError::NegativeAmount))
+        );
+        assert_eq!(client.get_user(&user).claimed_amt, 1000);
+    }
+
+    // Property test: across arbitrary sequences of signed i128 deltas (positive,
+    // negative, zero, and boundary values), `claimed_amt` is strictly
+    // non-decreasing (monotonic) and negative inputs always fail with
+    // `RegistryError::NegativeAmount`.
+    #[test]
+    fn test_claimed_amt_is_monotonic_property() {
+        let (env, _admin, client) = setup();
+        env.budget().reset_unlimited();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "Monotonic"));
+
+        // Deterministic xorshift64* generator over 64-bit seeds mapped into full
+        // signed i128 range (including negative, zero, positive, and extremes).
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next_u64 = || -> u64 {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+
+        let mut prev = client.get_user(&user).claimed_amt;
+        assert_eq!(prev, 0);
+
+        for step in 0..200u32 {
+            let hi = next_u64() as i64 as i128;
+            let lo = next_u64() as i128;
+            let amount: i128 = match step % 8 {
+                0 => 0,
+                1 => -1,
+                2 => 1,
+                3 => -(lo.abs() % 1_000_000_000 + 1),
+                4 => lo.abs() % 1_000_000_000 + 1,
+                5 => (hi << 32) ^ lo,
+                6 => i128::MIN / ((step as i128) + 1),
+                _ => lo.abs() % (i128::MAX / 500),
+            };
+
+            let res = client.try_add_claimed_amt(&user, &amount);
+            let current = client.get_user(&user).claimed_amt;
+
+            if amount < 0 {
+                assert_eq!(res, Err(Ok(RegistryError::NegativeAmount)));
+                assert_eq!(current, prev, "negative delta must not mutate claimed_amt");
+            } else {
+                assert_eq!(res, Ok(Ok(())));
+                assert!(
+                    current >= prev,
+                    "claimed_amt must be monotonic: {} < {}",
+                    current,
+                    prev
+                );
+                assert_eq!(current, prev.saturating_add(amount));
+            }
+            prev = current;
+        }
     }
 
     #[test]
@@ -1043,6 +1282,79 @@ mod test {
         assert_eq!(profile.total_points, 42);
         assert_eq!(profile.claimed_amt, 100);
         assert_eq!(profile.bot_count, 1);
+    }
+
+    #[test]
+    fn test_get_users_batch_returns_one_entry_per_address_in_order() {
+        let (env, _admin, client) = setup();
+        let u1 = Address::generate(&env);
+        let ghost = Address::generate(&env);
+        let u2 = Address::generate(&env);
+        client.register(&u1, &String::from_str(&env, "Alice"));
+        client.register(&u2, &String::from_str(&env, "Bob"));
+        client.add_points(&u1, &10_u64);
+
+        let addresses = soroban_sdk::vec![&env, u1.clone(), ghost.clone(), u2.clone()];
+        let batch = client.get_users_batch(&addresses);
+
+        assert_eq!(batch.len(), 3);
+        let p0 = batch.get(0).unwrap().unwrap();
+        assert_eq!(p0.address, u1);
+        assert_eq!(p0.username, String::from_str(&env, "Alice"));
+        assert_eq!(p0.total_points, 10);
+        assert!(batch.get(1).unwrap().is_none());
+        let p2 = batch.get(2).unwrap().unwrap();
+        assert_eq!(p2.address, u2);
+        assert_eq!(p2.username, String::from_str(&env, "Bob"));
+    }
+
+    #[test]
+    fn test_get_users_batch_empty_returns_empty() {
+        let (env, _admin, client) = setup();
+        let empty: Vec<Address> = Vec::new(&env);
+        assert_eq!(client.get_users_batch(&empty).len(), 0);
+    }
+
+    #[test]
+    fn test_get_users_batch_accepts_exactly_50_with_none_for_unregistered() {
+        let (env, _admin, client) = setup();
+        let mut addresses: Vec<Address> = Vec::new(&env);
+        for i in 0..MAX_USERS_BATCH {
+            let addr = Address::generate(&env);
+            if i % 2 == 0 {
+                client.register(&addr, &String::from_str(&env, &std::format!("user{}", i)));
+            }
+            addresses.push_back(addr);
+        }
+
+        let batch = client.get_users_batch(&addresses);
+        assert_eq!(batch.len(), MAX_USERS_BATCH);
+        for i in 0..MAX_USERS_BATCH {
+            let slot = batch.get(i).unwrap();
+            if i % 2 == 0 {
+                let profile = slot.unwrap();
+                assert_eq!(
+                    profile.username,
+                    String::from_str(&env, &std::format!("user{}", i))
+                );
+            } else {
+                assert!(slot.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_users_batch_rejects_more_than_cap() {
+        let (env, _admin, client) = setup();
+        let mut addresses: Vec<Address> = Vec::new(&env);
+        for _ in 0..(MAX_USERS_BATCH + 1) {
+            addresses.push_back(Address::generate(&env));
+        }
+
+        assert_eq!(
+            client.try_get_users_batch(&addresses),
+            Err(Ok(RegistryError::BatchTooLarge))
+        );
     }
 
     #[test]
@@ -1683,6 +1995,135 @@ mod auth_tests {
         }]);
         let result = client.try_decrement_bot_count(&user);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_set_admin_fails_for_non_admin_and_succeeds_for_admin() {
+        let env = Env::default();
+        let id = env.register_contract(None, RegistryContract);
+        let client = RegistryContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        env.mock_all_auths();
+        client.initialize(&admin);
+
+        // Non-admin proposal fails
+        env.mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "set_admin",
+                args: (new_admin.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_set_admin(&new_admin).is_err());
+        assert_eq!(client.pending_admin(), None);
+
+        // Current admin proposal succeeds
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "set_admin",
+                args: (new_admin.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_set_admin(&new_admin).is_ok());
+        assert_eq!(client.pending_admin(), Some(new_admin));
+    }
+
+    #[test]
+    fn test_accept_admin_only_pending_admin_can_accept() {
+        let env = Env::default();
+        let id = env.register_contract(None, RegistryContract);
+        let client = RegistryContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        env.mock_all_auths();
+        client.initialize(&admin);
+        client.set_admin(&new_admin);
+
+        // Current admin cannot accept on behalf of pending admin
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "accept_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_accept_admin().is_err());
+        assert_eq!(client.get_admin(), admin);
+
+        // Unrelated address cannot accept
+        env.mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "accept_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_accept_admin().is_err());
+        assert_eq!(client.get_admin(), admin);
+
+        // Pending admin accepts and becomes the active admin
+        env.mock_auths(&[MockAuth {
+            address: &new_admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "accept_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_accept_admin().is_ok());
+        assert_eq!(client.get_admin(), new_admin);
+        assert_eq!(client.pending_admin(), None);
+    }
+
+    #[test]
+    fn test_cancel_admin_transfer_requires_current_admin_auth() {
+        let env = Env::default();
+        let id = env.register_contract(None, RegistryContract);
+        let client = RegistryContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        env.mock_all_auths();
+        client.initialize(&admin);
+        client.set_admin(&new_admin);
+
+        // Pending admin cannot cancel
+        env.mock_auths(&[MockAuth {
+            address: &new_admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "cancel_admin_transfer",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_cancel_admin_transfer().is_err());
+        assert_eq!(client.pending_admin(), Some(new_admin.clone()));
+
+        // Current admin can cancel
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "cancel_admin_transfer",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_cancel_admin_transfer().is_ok());
+        assert_eq!(client.pending_admin(), None);
     }
 }
 

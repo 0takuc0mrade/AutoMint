@@ -11,13 +11,15 @@ import {
   BOT_TIER_BG_COLORS,
   TIER_META,
 } from "@/types";
-import type { MarketplaceListing, BotNFT } from "@/types";
+import type { MarketplaceListing, BotNFT, UserProfile } from "@/types";
 import { stroopsToXlm } from "@/lib/format";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 
 interface BotListingCardProps {
   listing: MarketplaceListing;
   bot?: BotNFT;
+  sellerProfile?: UserProfile | null;
+  sellerUsername?: string;
   connectedAddress: string | null;
   onBuy: (listingId: bigint) => void;
   onCancel: (listingId: bigint) => void;
@@ -33,6 +35,8 @@ function truncateAddress(address: string): string {
 export default function BotListingCard({
   listing,
   bot,
+  sellerProfile,
+  sellerUsername,
   connectedAddress,
   onBuy,
   onCancel,
@@ -141,8 +145,9 @@ export default function BotListingCard({
           className="truncate font-mono text-xs text-text"
           title={listing.seller}
           aria-label={`Seller address ${listing.seller}`}
+          data-testid={`listing-seller-${listing.id.toString()}`}
         >
-          {truncateAddress(listing.seller)}
+          {sellerProfile?.username || sellerUsername || truncateAddress(listing.seller)}
         </span>
       </div>
 

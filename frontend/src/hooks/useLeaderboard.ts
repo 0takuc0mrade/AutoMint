@@ -5,6 +5,7 @@ import type { UserProfile } from "@/types";
 import { pollWhenVisible } from "@/lib/polling";
 import { STALE_TIME, GC_TIME, qk } from "@/lib/queryKeys";
 import { LEADERBOARD_LIMIT } from "@/lib/constants";
+export { useProfiles } from "./useProfiles";
 
 export function useLeaderboard(limit = LEADERBOARD_LIMIT) {
   return useQuery<UserProfile[]>({

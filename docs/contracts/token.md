@@ -37,6 +37,26 @@ Query the token balance for an address. Returns 0 if the address has no balance 
 
 ---
 
+### spendable_balance
+
+```rust
+pub fn spendable_balance(env: Env, id: Address) -> i128
+```
+
+Query the portion of `balance` that is actually transferable right now (SEP-41). Equals `balance` minus any reserve held in a (currently unused) `Locked` entry for `id`; returns 0 for an address with no balance record.
+
+---
+
+### bump_balance
+
+```rust
+pub fn bump_balance(env: Env, id: Address)
+```
+
+Permissionless keeper call that refreshes `id`'s balance entry TTL without modifying its amount. Anyone may call this; it is a no-op if `id` has no balance record. See [Balance TTL](#balance-ttl) below.
+
+---
+
 ### transfer
 
 ```rust
@@ -95,9 +115,11 @@ pub fn approve(
 
 Approve a spender to transfer up to `amount` tokens from `from`. Requires authorization from `from`.
 
-- `from == spender` returns `TokenError::Unauthorized`
 - Negative amounts return `TokenError::NegativeAmount`
-- Zero amounts are valid and stored as 0 allowance
+- Zero amounts are valid and stored as 0 allowance; a zero amount may use a past `expiration_ledger` as a revoke
+- A non-zero amount with `expiration_ledger` in the past returns `TokenError::InvalidExpiration`
+- An `expiration_ledger` beyond the network's maximum allowance window returns `TokenError::InvalidExpiration`
+- #341: self-approval (`from == spender`) is permitted per SEP-41
 
 ---
 
@@ -206,15 +228,27 @@ Query the token symbol. Returns `TokenError::NotInitialized` if the contract is 
 | `NegativeAmount` | 6 | Amount is negative |
 | `AllowanceExpired` | 7 | Allowance has expired |
 | `Overflow` | 8 | Arithmetic overflow occurred |
+| `SupplyCapExceeded` | 9 | Mint would exceed the configured max supply |
+| `InvalidDecimals` | 10 | `decimal` was 0 at `initialize` |
+| `InvalidExpiration` | 11 | `approve`'s `expiration_ledger` is in the past (for a non-zero amount) or beyond the maximum allowance window |
+| `Paused` | 1000 | Contract is paused |
+
+---
+
+## Balance TTL
+
+Balance entries are persistent storage, bumped to the network's maximum entry TTL (3,110,400 ledgers, ≈180 days at 5s/ledger) on every `mint`, `transfer`, `burn`/`burn_from`, or `bump_balance` call. `balance()` and `spendable_balance()` are read-only and never extend TTL. A holder that transacts at least once within that window never archives; `bump_balance(id)` lets anyone (a keeper, a wallet, the holder) refresh a dormant balance's TTL without touching its amount.
 
 ---
 
 ## Events
 
-The contract emits the following events:
+The contract emits the following events, matching the Stellar Asset Contract (SAC) topic/data convention `topics = (name, ...addresses)`, `data = payload`:
 
-- `approve(from, spender)` with `(amount, expiration_ledger)`
-- `transfer(from, to)` with `amount`
-- `burn(from)` with `amount`
-- `mint(to)` with `amount`
-- `set_admin()` with `new_admin`
+| Function | Topics | Data |
+|----------|--------|------|
+| `transfer` | `("transfer", from, to)` | `amount: i128` |
+| `mint` | `("mint", admin, to)` | `amount: i128` |
+| `burn` | `("burn", from)` | `amount: i128` |
+| `approve` | `("approve", from, spender)` | `(amount: i128, expiration_ledger: u32)` |
+| `set_admin` | `("set_admin", admin)` | `new_admin: Address` |

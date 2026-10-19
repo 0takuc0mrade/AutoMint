@@ -340,7 +340,7 @@
             },
             "ext": "v0"
           },
-          120960
+          3110400
         ]
       ],
       [
@@ -388,7 +388,7 @@
             },
             "ext": "v0"
           },
-          120960
+          3110400
         ]
       ],
       [
@@ -430,7 +430,7 @@
             },
             "ext": "v0"
           },
-          120960
+          3110400
         ]
       ],
       [
@@ -512,7 +512,7 @@
             },
             "ext": "v0"
           },
-          120960
+          3110400
         ]
       ],
       [
@@ -731,7 +731,7 @@
             },
             "ext": "v0"
           },
-          120960
+          3110400
         ]
       ]
     ]
@@ -843,6 +843,9 @@
             "topics": [
               {
                 "symbol": "mint"
+              },
+              {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
               },
               {
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"

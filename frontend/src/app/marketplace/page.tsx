@@ -12,6 +12,7 @@ import {
 } from "@/hooks/useMarketplace";
 import { useAllBotDetails } from "@/hooks/useBotDetails";
 import { useBots } from "@/hooks/useAccrual";
+import { useProfiles } from "@/hooks/useProfiles";
 import BotListingCard from "@/components/marketplace/BotListingCard";
 import MarketStats from "@/components/marketplace/MarketStats";
 import BotCard from "@/components/dashboard/BotCard";
@@ -104,6 +105,17 @@ export default function MarketplacePage() {
     botDetails.forEach((bot) => map.set(bot.id, bot));
     return map;
   }, [botDetails]);
+
+  // Batch-fetch seller profiles in a single `get_users_batch` RPC call
+  // instead of one `get_user` simulation per row.
+  const sellerAddresses = useMemo(() => {
+    const addresses = new Set<string>();
+    (allListings ?? []).forEach((l) => addresses.add(l.seller));
+    (myListings ?? []).forEach((l) => addresses.add(l.seller));
+    return Array.from(addresses);
+  }, [allListings, myListings]);
+
+  const { data: sellerProfiles } = useProfiles(sellerAddresses);
 
   const buy = useBuyBot();
   const cancel = useCancelListing();
@@ -276,6 +288,7 @@ export default function MarketplacePage() {
               key={listing.id.toString()}
               listing={listing}
               {...(bot ? { bot } : {})}
+              sellerProfile={sellerProfiles?.[listing.seller] ?? null}
               connectedAddress={publicKey}
               onBuy={handleBuy}
               onCancel={handleCancel}
@@ -452,6 +465,7 @@ export default function MarketplacePage() {
                         key={listing.id.toString()}
                         listing={listing}
                         {...(bot ? { bot } : {})}
+                        sellerProfile={sellerProfiles?.[listing.seller] ?? null}
                         connectedAddress={publicKey}
                         onBuy={handleBuy}
                         onCancel={handleCancel}

@@ -889,7 +889,7 @@ export async function getAccrualConfig(
 ): Promise<{ pointsPerAmt: number }> {
   const source = defaultSource(sourceAddress);
   const raw = await simulateContractCall<Record<string, unknown>>(
-    ACCRUAL_CONTRACT_ID,
+    CONTRACT_ADDRESSES.accrual,
     "config",
     [],
     source
@@ -910,45 +910,6 @@ export async function getPendingPoints(userAddress: string): Promise<bigint> {
     userAddress
   );
   return toBigInt(raw, "pending_points");
-}
-
-/**
- * Get the accrual contract configuration (points_per_amt).
- * Calls the accrual contract's config() function.
- */
-export async function getAccrualConfig(callerAddress?: string): Promise<{ points_per_amt: bigint } | null> {
-  const server = getServer();
-  const contract = new Contract(ACCRUAL_CONTRACT_ID);
-  const source = callerAddress ?? (typeof window !== "undefined" ? (window as any)?.selectedPublicKey : undefined);
-
-  if (!source) {
-    return { points_per_amt: BigInt(POINTS_PER_AMT) };
-  }
-
-  try {
-    const result = await server.simulateTransaction(
-      new TransactionBuilder(
-        await server.getAccount(source),
-        { fee: "100", networkPassphrase: STELLAR_NETWORK_PASSPHRASE }
-      )
-        .addOperation(contract.call("config"))
-        .setTimeout(30)
-        .build()
-    );
-
-    if (SorobanRpc.Api.isSimulationError(result) || !result.result?.retval) {
-      return { points_per_amt: BigInt(POINTS_PER_AMT) };
-    }
-
-    const configRaw = scValToNative(result.result.retval);
-    if (!configRaw) return { points_per_amt: BigInt(POINTS_PER_AMT) };
-
-    return {
-      points_per_amt: toBigInt(configRaw.points_per_amt),
-    };
-  } catch {
-    return { points_per_amt: BigInt(POINTS_PER_AMT) };
-  }
 }
 
 /**
@@ -1027,6 +988,48 @@ export async function getUserProfile(userAddress: string): Promise<UserProfile |
   if (!profileRaw) return null;
   return parseUserProfile(profileRaw);
 }
+
+/** Most addresses `get_users_batch` accepts in one call. */
+export const MAX_USERS_BATCH = 50;
+
+/**
+ * Get user profiles for up to {@link MAX_USERS_BATCH} addresses in a single
+ * registry simulation.
+ *
+ * Results are returned in the same order as `addresses`; unregistered
+ * addresses map to `null`. Passing more than {@link MAX_USERS_BATCH}
+ * addresses throws an error (matching the contract's `BatchTooLarge` error).
+ * Every RPC or contract error propagates so React Query's `isError` path fires.
+ */
+export async function getUsersBatch(
+  addresses: string[],
+  sourceAddress?: string
+): Promise<(UserProfile | null)[]> {
+  if (addresses.length === 0) return [];
+  if (addresses.length > MAX_USERS_BATCH) {
+    throw new Error(
+      `getUsersBatch accepts at most ${MAX_USERS_BATCH} addresses, got ${addresses.length}`
+    );
+  }
+  const raw = await simulateContractCall<(Record<string, unknown> | null)[]>(
+    CONTRACT_ADDRESSES.registry,
+    "get_users_batch",
+    [
+      xdr.ScVal.scvVec(
+        addresses.map((address) => nativeToScVal(address, { type: "address" }))
+      ),
+    ],
+    sourceAddress ?? addresses[0] ?? defaultSource()
+  );
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `get_users_batch returned unexpected type ${typeof raw}; expected array`
+    );
+  }
+  return raw.map((entry) => (entry ? parseUserProfile(entry) : null));
+}
+
+export const getUserProfiles = getUsersBatch;
 
 /**
  * Get the list of bot IDs owned by a user from the bot_nft contract (#481).
@@ -1128,27 +1131,11 @@ export async function getBotsRange(
  */
 export async function getAllTiers(sourceAddress?: string): Promise<Record<BotTier, TierInfo>> {
   const source = defaultSource(sourceAddress);
-  const tiers = await Promise.all(
-    TIER_ORDER.map(async (tier, index): Promise<TierInfo> => {
-      const raw = await simulateContractCall<unknown[]>(
-        CONTRACT_ADDRESSES.botNft,
-        "get_tier_info",
-        [nativeToScVal(index, { type: "u32" })],
-        source
-      );
-      if (!Array.isArray(raw) || raw.length !== 3) {
-        throw new Error(
-          `get_tier_info returned unexpected shape for ${tier}; expected [name, rate, price]`
-        );
-      }
-      const [name, rate, price] = raw;
-      return {
-        tier,
-        name: String(name),
-        rate: toBigInt(rate, "rate"),
-        price: toBigInt(price, "price"),
-      };
-    })
+  const raw = await simulateContractCall<Array<{ name: unknown; rate: unknown; price: unknown }>>(
+    CONTRACT_ADDRESSES.botNft,
+    "all_tiers",
+    [],
+    source
   );
   if (!Array.isArray(raw) || raw.length !== 5) {
     throw new Error(

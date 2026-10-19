@@ -1073,6 +1073,28 @@ export interface Client {
   }) => Promise<AssembledTransaction<Array<UserProfile>>>
 
   /**
+   * Construct and simulate a get_users_batch transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Fetch profiles for up to `MAX_USERS_BATCH` addresses in a single call,
+   * in the same order as `addresses`. Unregistered addresses map to `None`.
+   */
+  get_users_batch: ({addresses}: {addresses: Array<string>}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<Array<Option<UserProfile>>>>>
+
+  /**
    * Construct and simulate a decrement_bot_count transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
   decrement_bot_count: ({user}: {user: string}, options?: {
@@ -1218,6 +1240,7 @@ export class Client extends ContractClient {
         is_registered: this.txFromJSON<boolean>,
         add_claimed_amt: this.txFromJSON<Result<void>>,
         get_leaderboard: this.txFromJSON<Array<UserProfile>>,
+        get_users_batch: this.txFromJSON<Result<Array<Option<UserProfile>>>>,
         decrement_bot_count: this.txFromJSON<Result<void>>,
         increment_bot_count: this.txFromJSON<Result<void>>
   }

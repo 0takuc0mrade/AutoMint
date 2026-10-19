@@ -1876,13 +1876,15 @@ mod test {
             from: alice.clone(),
             spender: spender.clone(),
         });
-        env.storage().temporary().set(
-            &key,
-            &AllowanceValue {
-                amount: 250,
-                expiration_ledger,
-            },
-        );
+        env.as_contract(&client.address, || {
+            env.storage().temporary().set(
+                &key,
+                &AllowanceValue {
+                    amount: 250,
+                    expiration_ledger,
+                },
+            );
+        });
         assert_eq!(client.allowance(&alice, &spender), 250_i128);
 
         env.ledger().set_sequence_number(current + 2);

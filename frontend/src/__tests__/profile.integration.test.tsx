@@ -147,6 +147,16 @@ describe('Profile Page Integration', () => {
     expect(screen.getByText('Bot #2')).toBeInTheDocument();
   });
 
+  it('prefers display_name over username when present (#373)', () => {
+    mockWalletStore.publicKey = MOCK_PROFILE.address;
+    mockHooks.profile = { ...MOCK_PROFILE, display_name: 'Ada the Great' } as typeof MOCK_PROFILE;
+
+    render(<ProfilePage />);
+
+    expect(screen.getByText('Ada the Great')).toBeInTheDocument();
+    expect(screen.queryByText('ada_girly')).not.toBeInTheDocument();
+  });
+
   it('hides the bots section when the user owns no bots', () => {
     mockWalletStore.publicKey = MOCK_PROFILE.address;
     mockHooks.profile = MOCK_PROFILE;

@@ -34,6 +34,45 @@ describe('LeaderboardTable Component', () => {
     expect(screen.getByTestId('empty-leaderboard')).toBeInTheDocument();
   });
 
+  it('shows accrued lifetime points when an accrual state is present (#420)', () => {
+    const alice = mockUsers[0]!;
+    render(
+      <LeaderboardTable
+        users={mockUsers.slice(0, 1)}
+        accrualStates={{
+          [alice.address]: {
+            last_claim_ts: 0n,
+            carry_points: 0n,
+            lifetime_points: 42n,
+            rate: 2n,
+            started_at: 1n,
+          },
+        }}
+      />,
+    );
+    const lifetime = screen.getByTestId('accrual-lifetime-1');
+    expect(lifetime).toBeInTheDocument();
+    expect(lifetime).toHaveTextContent('42 lifetime');
+  });
+
+  it('omits the lifetime line when the accrual state has no entry for the row', () => {
+    render(
+      <LeaderboardTable
+        users={mockUsers.slice(0, 1)}
+        accrualStates={{
+          GNOPE000000000000000000000000000000000000000000: {
+            last_claim_ts: 0n,
+            carry_points: 0n,
+            lifetime_points: 42n,
+            rate: 2n,
+            started_at: 1n,
+          },
+        }}
+      />,
+    );
+    expect(screen.queryByTestId('accrual-lifetime-1')).not.toBeInTheDocument();
+  });
+
   it('renders users list correctly with table structure', () => {
     render(<LeaderboardTable users={mockUsers.slice(0, 2)} />);
     expect(screen.getByTestId('leaderboard-table')).toBeInTheDocument();
@@ -223,6 +262,19 @@ describe('LeaderboardTable Component', () => {
       expect(within(pinned).getByText('dave')).toBeInTheDocument();
       expect(within(pinned).getByText('42')).toBeInTheDocument();
       expect(within(pinned).getByText('8 points to reach #311')).toBeInTheDocument();
+    });
+
+    it('falls back to a generic label when the pinned rank has no username', () => {
+      render(
+        <LeaderboardTable
+          users={mockUsers}
+          currentAddress={outsideTopFifty.address}
+          currentUserRank={{ ...outsideTopFifty, username: '' }}
+        />,
+      );
+
+      const pinned = screen.getByTestId('current-user-rank-row');
+      expect(within(pinned).getByText('Your position')).toBeInTheDocument();
     });
 
     it('highlights a top-50 user in place rather than duplicating them', () => {

@@ -542,10 +542,14 @@ export interface UserRank {
  */
 function isMissingGetRankMethod(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  const message = error.message;
   return (
     /(?:unknown|no such|missing|unsupported)\s+(?:contract\s+)?(?:function|method)\s+[`'"]?get_rank\b/i.test(
-      error.message,
-    ) || /\bno\s+get_rank\b/i.test(error.message)
+      message,
+    ) ||
+    /\bno\s+get_rank\b/i.test(message) ||
+    // Soroban reports a call to an absent contract entry point as Contract #0.
+    /Error\(Contract,\s*#0\b/.test(message)
   );
 }
 

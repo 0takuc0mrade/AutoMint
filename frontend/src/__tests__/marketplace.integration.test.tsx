@@ -129,7 +129,7 @@ const WALLET = "GABC1234TESTWALLETADDRESSXYZ";
 
 const GOLD_BOT: BotNFT = {
   id: 1n,
-  name: "Goldie",
+  nickname: "Goldie",
   owner: WALLET,
   tier: "Gold",
   accrual_rate: 100n,
@@ -139,7 +139,7 @@ const GOLD_BOT: BotNFT = {
 
 const BASIC_BOT: BotNFT = {
   id: 2n,
-  name: "Sparky",
+  nickname: "Sparky",
   owner: "GOTHER99999999999999999999999999",
   tier: "Basic",
   accrual_rate: 1n,
@@ -389,13 +389,15 @@ describe("Marketplace Page Integration (#499)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /List for Sale/i }));
 
-    const title = await screen.findByText(/Sparky for Sale/i);
+    const title = await screen.findByText(/List Sparky Bot for Sale/i);
     expect(title).toBeInTheDocument();
     expect(screen.getByLabelText(/Listing Price/i)).toBeInTheDocument();
 
     // Closing the modal clears the selected bot.
     fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
-    await waitFor(() => expect(screen.queryByText(/Sparky for Sale/i)).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText(/List Sparky Bot for Sale/i)).not.toBeInTheDocument()
+    );
   });
 
   it("shows the no-owned-bots state when the user has none to list", () => {

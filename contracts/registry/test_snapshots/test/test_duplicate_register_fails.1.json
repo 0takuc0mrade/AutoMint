@@ -145,6 +145,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "display_name"
+                      },
+                      "val": {
+                        "string": "Alice"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "registered_at"
                       },
                       "val": {
@@ -164,7 +172,7 @@
                         "symbol": "username"
                       },
                       "val": {
-                        "string": "Alice"
+                        "string": "alice"
                       }
                     }
                   ]
@@ -186,7 +194,7 @@
                   "symbol": "Username"
                 },
                 {
-                  "string": "Alice"
+                  "string": "alice"
                 }
               ]
             },
@@ -206,7 +214,7 @@
                       "symbol": "Username"
                     },
                     {
-                      "string": "Alice"
+                      "string": "alice"
                     }
                   ]
                 },
@@ -485,6 +493,29 @@
             ],
             "data": {
               "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "init"
+              },
+              {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              }
+            ],
+            "data": {
+              "u64": 0
             }
           }
         }

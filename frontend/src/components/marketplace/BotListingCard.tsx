@@ -147,7 +147,7 @@ export default function BotListingCard({
           aria-label={`Seller address ${listing.seller}`}
           data-testid={`listing-seller-${listing.id.toString()}`}
         >
-          {sellerProfile?.username || sellerUsername || truncateAddress(listing.seller)}
+          {sellerProfile?.display_name || sellerProfile?.username || sellerUsername || truncateAddress(listing.seller)}
         </span>
       </div>
 

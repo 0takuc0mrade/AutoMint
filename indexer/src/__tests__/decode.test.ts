@@ -10,6 +10,7 @@ import {
 import {
   G1,
   G2,
+  G3,
   CREG,
   CBOT,
   CACC,
@@ -63,6 +64,107 @@ describe("decodeRawEvent", () => {
     );
     expect(ev.event).toBe("dec_bot");
     expect(toNum(ev.data)).toBe(4);
+  });
+
+  it("registry.init: topics=[admin], data=timestamp(u64)", () => {
+    const ev = decodeRawEvent(
+      makeRawEvent({
+        contractId: CREG,
+        topics: [sym("init"), addr(G1)],
+        value: u64(1700000001),
+      }),
+    );
+    expect(ev.event).toBe("init");
+    expect(ev.topics).toEqual([G1]);
+    expect(toNum(ev.data)).toBe(1700000001);
+  });
+
+  it("registry.writers: topics=[name only], data=[accrual, bot_nft]", () => {
+    const ev = decodeRawEvent(
+      makeRawEvent({
+        contractId: CREG,
+        topics: [sym("writers")],
+        value: vec([addr(G2), addr(G3)]),
+      }),
+    );
+    expect(ev.event).toBe("writers");
+    expect(ev.topics).toEqual([]);
+    expect(ev.data).toEqual([G2, G3]);
+  });
+
+  it("registry.inc_bot: data=bot_count(u32)", () => {
+    const ev = decodeRawEvent(
+      makeRawEvent({
+        contractId: CREG,
+        topics: [sym("inc_bot"), addr(G1)],
+        value: u32(2),
+      }),
+    );
+    expect(ev.event).toBe("inc_bot");
+    expect(toNum(ev.data)).toBe(2);
+  });
+
+  it("registry.claimed: data=amount(i128), serialized as a decimal string (#370)", () => {
+    const ev = decodeRawEvent(
+      makeRawEvent({
+        contractId: CREG,
+        topics: [sym("claimed"), addr(G1)],
+        value: i128(25000000n),
+      }),
+    );
+    expect(ev.event).toBe("claimed");
+    expect(ev.topics).toEqual([G1]);
+    expect(toDecimal(ev.data)).toBe("25000000");
+  });
+
+  it("registry.newseason: topics=[name only], data=season(u32) (#371)", () => {
+    const ev = decodeRawEvent(
+      makeRawEvent({
+        contractId: CREG,
+        topics: [sym("newseason")],
+        value: u32(3),
+      }),
+    );
+    expect(ev.event).toBe("newseason");
+    expect(ev.topics).toEqual([]);
+    expect(toNum(ev.data)).toBe(3);
+  });
+
+  it("registry.set_admin: data=[current, pending] two-address tuple (#372)", () => {
+    const ev = decodeRawEvent(
+      makeRawEvent({
+        contractId: CREG,
+        topics: [sym("set_admin")],
+        value: vec([addr(G1), addr(G2)]),
+      }),
+    );
+    expect(ev.event).toBe("set_admin");
+    expect(ev.topics).toEqual([]);
+    expect(ev.data).toEqual([G1, G2]);
+  });
+
+  it("registry.adm_acpt: data=[current, pending] (#372)", () => {
+    const ev = decodeRawEvent(
+      makeRawEvent({
+        contractId: CREG,
+        topics: [sym("adm_acpt")],
+        value: vec([addr(G1), addr(G2)]),
+      }),
+    );
+    expect(ev.event).toBe("adm_acpt");
+    expect(ev.data).toEqual([G1, G2]);
+  });
+
+  it("registry.adm_cncl: data=[current, pending] (#372)", () => {
+    const ev = decodeRawEvent(
+      makeRawEvent({
+        contractId: CREG,
+        topics: [sym("adm_cncl")],
+        value: vec([addr(G1), addr(G2)]),
+      }),
+    );
+    expect(ev.event).toBe("adm_cncl");
+    expect(ev.data).toEqual([G1, G2]);
   });
 
   it("bot_nft.mint (mint_tier): data=[bot_id(u64), tier(symbol)]", () => {

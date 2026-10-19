@@ -205,13 +205,18 @@ Soroban provides three storage tiers: **Instance**, **Persistent**, and **Tempor
 #### 1. Registry Contract (`automint_registry`)
 - **Instance Storage**:
   - `Admin`: `Address`
+  - `PendingAdmin`: `Address` (two-step admin transfer, AM-031)
   - `Initialized`: `bool`
   - `TotalUsers`: `u32`
-  - `UserList`: `Vec<Address>`
+  - `TopUsers`: `Vec<(Address, u64)>` — bounded lifetime leaderboard (at most `LEADERBOARD_SIZE` entries, points descending)
+  - `SeasonTop(u32)`: `Vec<(Address, u64)>` — same bounded shape, one board per season (#371)
+  - `Season`: `u32` — current season counter; absent = season 0 (#371)
+  - `Writers`: `Writers { accrual: Address, bot_nft: Address }` — #318 cross-contract writer allowlist
 - **Persistent Storage**:
-  - `UserProfile(Address)` -> `UserProfile { address: Address, username: String, total_points: u64, claimed_amt: i128, registered_at: u64, bot_count: u32 }`
-  - `Username(String)` -> `Address`
-- **TTL Renewal Policy**: Every write operation (`register`, `add_points`, `increment_bot_count`, `decrement_bot_count`, `add_claimed_amt`) extends TTL for the target key and contract instance using `LEDGER_THRESHOLD` and `LEDGER_BUMP`.
+  - `UserProfile(Address)` -> `UserProfile { address: Address, username: String, display_name: String, total_points: u64, claimed_amt: i128, registered_at: u64, bot_count: u32 }` (`username` is the ASCII-lowercased uniqueness key; `display_name` preserves the original casing, #373)
+  - `Username(String)` -> `Address` (keyed on the ASCII-lowercased username)
+  - `SeasonPoints(u32, Address)` -> `u64` — per-user season points (#371)
+- **TTL Renewal Policy**: Every write operation (`register`, `add_points`, `increment_bot_count`, `decrement_bot_count`, `add_claimed_amt`) extends TTL for the target key (including the user's current-season `SeasonPoints` entry) and contract instance using `LEDGER_THRESHOLD` and `LEDGER_BUMP`.
 
 #### 2. BotNFT Contract (`automint_bot_nft`)
 - **Instance Storage**:
@@ -270,9 +275,17 @@ Soroban provides three storage tiers: **Instance**, **Persistent**, and **Tempor
 
 | Contract | Event Topic (Symbol) | Additional Topics | Data Payload | Trigger Condition |
 |---|---|---|---|---|
-| **Registry** | `register` | `user: Address` | `timestamp: u64` | User successfully registered |
+| **Registry** | `init` | `admin: Address` | `timestamp: u64` | Registry initialized |
+| | `register` | `user: Address` | `timestamp: u64` | User successfully registered |
+| | `writers` | *(none)* | `(accrual: Address, bot_nft: Address)` | Writer allowlist set |
 | | `addpoints` | `user: Address` | `points: u64` | Points added via claim |
+| | `inc_bot` | `user: Address` | `bot_count: u32` | User bot count incremented on mint |
 | | `dec_bot` | `user: Address` | `bot_count: u32` | User decrements bot count |
+| | `claimed` | `user: Address` | `amount: i128` | Claimed AMT total credited (`add_claimed_amt`, #370) |
+| | `newseason` | *(none)* | `season: u32` | New season started (`start_new_season`, #371) |
+| | `set_admin` | *(none)* | `(current_admin: Address, new_admin: Address)` | Admin nominated (two-step, #372) |
+| | `adm_acpt` | *(none)* | `(current_admin: Address, pending: Address)` | Nominated admin accepted (#372) |
+| | `adm_cncl` | *(none)* | `(current_admin: Address, pending: Address)` | Pending transfer cancelled (#372) |
 | **BotNFT** | `mint` | `owner: Address` | `(bot_id: u64, tier: Tier)` | Bot NFT minted |
 | | `transfer` | `from: Address`, `to: Address` | `bot_id: u64` | Bot NFT ownership transferred |
 | **Accrual** | `start` | `user: Address` | `timestamp: u64` | Accrual tracking started |

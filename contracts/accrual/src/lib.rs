@@ -644,7 +644,8 @@ impl AccrualContract {
         let old_val = current_config.points_per_amt;
 
         // Bound changes to at most 2x jump in either direction
-        if points_per_amt > old_val.saturating_mul(2) || points_per_amt.saturating_mul(2) < old_val {
+        if points_per_amt > old_val.saturating_mul(2) || points_per_amt.saturating_mul(2) < old_val
+        {
             return Err(AccrualError::InvalidConfig);
         }
 
@@ -656,10 +657,8 @@ impl AccrualContract {
             },
         );
 
-        env.events().publish(
-            (symbol_short!("cfg_upd"), admin),
-            (old_val, points_per_amt),
-        );
+        env.events()
+            .publish((symbol_short!("cfg_upd"), admin), (old_val, points_per_amt));
 
         Ok(())
     }

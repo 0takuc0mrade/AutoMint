@@ -17,7 +17,7 @@ function formatDate(timestamp: number): string {
 
 const baseBot: BotNFT = {
   id: 42n,
-  name: "Ada Bot",
+  nickname: "Ada Bot",
   owner: "GABC1234",
   tier: "Gold",
   accrual_rate: 10n,
@@ -42,7 +42,7 @@ describe("BotCard Component", () => {
   });
 
   it("falls back to the tier name when the bot has no name", () => {
-    const bot = { ...baseBot, name: "" };
+    const bot = { ...baseBot, nickname: "" };
     render(<BotCard bot={bot} />);
 
     expect(screen.getAllByText("Gold").length).toBe(2);
@@ -70,7 +70,7 @@ describe("BotCard Component", () => {
   });
 
   it("renders an unknown tier gracefully", () => {
-    const bot = { ...baseBot, name: "", tier: "Mystery" as unknown as BotNFT["tier"] };
+    const bot = { ...baseBot, nickname: "", tier: "Mystery" as unknown as BotNFT["tier"] };
     render(<BotCard bot={bot} />);
 
     expect(screen.getAllByText("Unknown").length).toBe(2);

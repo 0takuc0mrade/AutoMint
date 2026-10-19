@@ -145,6 +145,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "display_name"
+                      },
+                      "val": {
+                        "string": "Ttl1"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "registered_at"
                       },
                       "val": {
@@ -164,7 +172,7 @@
                         "symbol": "username"
                       },
                       "val": {
-                        "string": "Ttl1"
+                        "string": "ttl1"
                       }
                     }
                   ]
@@ -186,7 +194,7 @@
                   "symbol": "Username"
                 },
                 {
-                  "string": "Ttl1"
+                  "string": "ttl1"
                 }
               ]
             },
@@ -206,7 +214,7 @@
                       "symbol": "Username"
                     },
                     {
-                      "string": "Ttl1"
+                      "string": "ttl1"
                     }
                   ]
                 },
@@ -495,6 +503,29 @@
       "event": {
         "ext": "v0",
         "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "init"
+              },
+              {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              }
+            ],
+            "data": {
+              "u64": 0
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
         "type_": "diagnostic",
         "body": {
           "v0": {
@@ -742,6 +773,14 @@
                 },
                 {
                   "key": {
+                    "symbol": "display_name"
+                  },
+                  "val": {
+                    "string": "Ttl1"
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "registered_at"
                   },
                   "val": {
@@ -761,7 +800,7 @@
                     "symbol": "username"
                   },
                   "val": {
-                    "string": "Ttl1"
+                    "string": "ttl1"
                   }
                 }
               ]

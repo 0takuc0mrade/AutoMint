@@ -154,7 +154,7 @@ import { PointsCounter } from "@/components/dashboard/PointsCounter";
 
 const MOCK_BOT = {
   id: BigInt(1),
-  name: "Alpha Bot",
+  nickname: "Alpha Bot",
   owner: "GABC1234TESTWALLETADDRESS",
   tier: "Basic" as const,
   accrual_rate: BigInt(1),
@@ -164,7 +164,7 @@ const MOCK_BOT = {
 
 const MOCK_GOLD_BOT = {
   id: BigInt(2),
-  name: "Gold Bot",
+  nickname: "Gold Bot",
   owner: "GABC1234TESTWALLETADDRESS",
   tier: "Gold" as const,
   accrual_rate: BigInt(100),

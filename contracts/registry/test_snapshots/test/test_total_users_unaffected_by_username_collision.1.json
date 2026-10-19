@@ -147,6 +147,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "display_name"
+                      },
+                      "val": {
+                        "string": "Taken"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "registered_at"
                       },
                       "val": {
@@ -166,7 +174,7 @@
                         "symbol": "username"
                       },
                       "val": {
-                        "string": "Taken"
+                        "string": "taken"
                       }
                     }
                   ]
@@ -188,7 +196,7 @@
                   "symbol": "Username"
                 },
                 {
-                  "string": "Taken"
+                  "string": "taken"
                 }
               ]
             },
@@ -208,7 +216,7 @@
                       "symbol": "Username"
                     },
                     {
-                      "string": "Taken"
+                      "string": "taken"
                     }
                   ]
                 },
@@ -487,6 +495,29 @@
             ],
             "data": {
               "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "init"
+              },
+              {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              }
+            ],
+            "data": {
+              "u64": 0
             }
           }
         }

@@ -385,6 +385,26 @@ export interface Client {
   }) => Promise<AssembledTransaction<Result<Array<Option<AccrualState>>>>>
 
   /**
+   * Construct and simulate a set_points_per_amt transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  set_points_per_amt: ({points_per_amt}: {points_per_amt: u64}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a seconds_to_next_amt transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Seconds until the next AMT token will be earned. Returns 0 if the user
    * already has enough carry points for the next token or if their rate is 0.
@@ -429,6 +449,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAARZ2V0X2FjY3J1YWxfYWRtaW4AAAAAAAAAAAAAAQAAA+kAAAATAAAH0AAAAAxBY2NydWFsRXJyb3I=",
         "AAAAAAAAAAAAAAARZ2V0X2FjY3J1YWxfc3RhdGUAAAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPoAAAH0AAAAAxBY2NydWFsU3RhdGU=",
         "AAAAAAAAANFBY2NydWFsIHN0YXRlcyBmb3IgdXAgdG8gYE1BWF9CQVRDSF9VU0VSU2AgdXNlcnMgaW4gb25lIGNhbGwsIGluIHRoZQpzYW1lIG9yZGVyIGFzIGB1c2Vyc2AuIEFkZHJlc3NlcyB3aXRoIG5vIGFjY3J1YWwgcmVjb3JkIG1hcCB0byBgTm9uZWAuCkxldHMgYSBsZWFkZXJib2FyZCBwb2xsIG9uZSBzaW11bGF0aW9uIGluc3RlYWQgb2Ygb25lIHBlciByb3cgKCM0MjApLgAAAAAAABJnZXRfYWNjcnVhbF9zdGF0ZXMAAAAAAAEAAAAAAAAABXVzZXJzAAAAAAAD6gAAABMAAAABAAAD6QAAA+oAAAPoAAAH0AAAAAxBY2NydWFsU3RhdGUAAAfQAAAADEFjY3J1YWxFcnJvcg==",
+        "AAAAAAAAAAAAAAASc2V0X3BvaW50c19wZXJfYW10AAAAAAABAAAAAAAAAA5wb2ludHNfcGVyX2FtdAAAAAAABgAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADEFjY3J1YWxFcnJvcg==",
         "AAAAAAAAAM5TZWNvbmRzIHVudGlsIHRoZSBuZXh0IEFNVCB0b2tlbiB3aWxsIGJlIGVhcm5lZC4gUmV0dXJucyAwIGlmIHRoZSB1c2VyCmFscmVhZHkgaGFzIGVub3VnaCBjYXJyeSBwb2ludHMgZm9yIHRoZSBuZXh0IHRva2VuIG9yIGlmIHRoZWlyIHJhdGUgaXMgMC4KQ29tcHV0ZWQgZnJvbSBjYXJyeV9wb2ludHMsIHBvaW50c19wZXJfYW10LCBhbmQgYWNjcnVhbCByYXRlLgAAAAAAE3NlY29uZHNfdG9fbmV4dF9hbXQAAAAAAQAAAAAAAAAEdXNlcgAAABMAAAABAAAD6QAAAAYAAAfQAAAADEFjY3J1YWxFcnJvcg==" ]),
       options
     )
@@ -447,6 +468,7 @@ export class Client extends ContractClient {
         get_accrual_admin: this.txFromJSON<Result<string>>,
         get_accrual_state: this.txFromJSON<Option<AccrualState>>,
         get_accrual_states: this.txFromJSON<Result<Array<Option<AccrualState>>>>,
+        set_points_per_amt: this.txFromJSON<Result<void>>,
         seconds_to_next_amt: this.txFromJSON<Result<u64>>
   }
 }

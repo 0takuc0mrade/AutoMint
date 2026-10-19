@@ -107,6 +107,46 @@ describe('LeaderboardTable Component', () => {
     expect(screen.getByText('batch_alice')).toBeInTheDocument();
   });
 
+  // -------------------------------------------------------------------------
+  // #373 — preserved-casing display names
+  // -------------------------------------------------------------------------
+  it('prefers the preserved display name over the normalized username (#373)', () => {
+    const users: LeaderboardUser[] = [
+      { rank: 1, address: 'GABC123', points: 100n, username: 'alicesmith', display_name: 'AliceSmith' },
+    ];
+    render(<LeaderboardTable users={users} />);
+    expect(screen.getByText('AliceSmith')).toBeInTheDocument();
+    expect(screen.queryByText('alicesmith')).not.toBeInTheDocument();
+  });
+
+  it('prefers a hydrated profile display name over the leaderboard row (#373)', () => {
+    const users: LeaderboardUser[] = [
+      { rank: 1, address: 'GABC123', points: 100n, username: 'alicesmith', display_name: 'AliceSmith' },
+    ];
+    render(
+      <LeaderboardTable
+        users={users}
+        profiles={{
+          GABC123: {
+            address: 'GABC123',
+            username: 'alicesmith',
+            display_name: 'AliceSmith!',
+            points: 100n,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText('AliceSmith!')).toBeInTheDocument();
+  });
+
+  it('falls back to the username when no display name exists (pre-#373 profiles)', () => {
+    const users: LeaderboardUser[] = [
+      { rank: 1, address: 'GABC123', points: 100n, username: 'alice' },
+    ];
+    render(<LeaderboardTable users={users} />);
+    expect(screen.getByText('alice')).toBeInTheDocument();
+  });
+
   it('highlights current user row with You badge', () => {
     render(<LeaderboardTable users={mockUsers} currentAddress={mockUsers[0].address} />);
     expect(screen.getByText('You')).toBeInTheDocument();

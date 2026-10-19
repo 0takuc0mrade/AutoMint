@@ -170,6 +170,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "display_name"
+                      },
+                      "val": {
+                        "string": "AddrA"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "registered_at"
                       },
                       "val": {
@@ -189,7 +197,7 @@
                         "symbol": "username"
                       },
                       "val": {
-                        "string": "AddrA"
+                        "string": "addra"
                       }
                     }
                   ]
@@ -267,6 +275,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "display_name"
+                      },
+                      "val": {
+                        "string": "AddrB"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "registered_at"
                       },
                       "val": {
@@ -286,7 +302,7 @@
                         "symbol": "username"
                       },
                       "val": {
-                        "string": "AddrB"
+                        "string": "addrb"
                       }
                     }
                   ]
@@ -308,7 +324,7 @@
                   "symbol": "Username"
                 },
                 {
-                  "string": "AddrA"
+                  "string": "addra"
                 }
               ]
             },
@@ -328,7 +344,7 @@
                       "symbol": "Username"
                     },
                     {
-                      "string": "AddrA"
+                      "string": "addra"
                     }
                   ]
                 },
@@ -353,7 +369,7 @@
                   "symbol": "Username"
                 },
                 {
-                  "string": "AddrB"
+                  "string": "addrb"
                 }
               ]
             },
@@ -373,7 +389,7 @@
                       "symbol": "Username"
                     },
                     {
-                      "string": "AddrB"
+                      "string": "addrb"
                     }
                   ]
                 },
@@ -695,6 +711,29 @@
             ],
             "data": {
               "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "init"
+              },
+              {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              }
+            ],
+            "data": {
+              "u64": 0
             }
           }
         }

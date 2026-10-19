@@ -1,17 +1,28 @@
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useLeaderboard, useRank } from '../hooks/useLeaderboard';
-import { getLeaderboard, getUserRank } from '@/lib/contracts';
+import { useLeaderboard, useRank, useSeason } from '../hooks/useLeaderboard';
+import {
+  getLeaderboard,
+  getLeaderboardForSeason,
+  getSeason,
+  getUserRank,
+} from '@/lib/contracts';
 import { useWalletStore } from '@/store/walletStore';
 import type { UserProfile } from '@/types';
 
 // Mock the contracts module
 jest.mock('@/lib/contracts', () => ({
   getLeaderboard: jest.fn(),
+  getLeaderboardForSeason: jest.fn(),
+  getSeason: jest.fn(),
   getUserRank: jest.fn(),
 }));
 
 const mockGetLeaderboard = getLeaderboard as jest.MockedFunction<typeof getLeaderboard>;
+const mockGetLeaderboardForSeason = getLeaderboardForSeason as jest.MockedFunction<
+  typeof getLeaderboardForSeason
+>;
+const mockGetSeason = getSeason as jest.MockedFunction<typeof getSeason>;
 const mockGetUserRank = getUserRank as jest.MockedFunction<typeof getUserRank>;
 
 describe('useLeaderboard Hook', () => {
@@ -116,6 +127,84 @@ describe('useLeaderboard Hook', () => {
 
     expect(result.current.data).toEqual([]);
     expect(result.current.error).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // #371 — season board selection
+  // -------------------------------------------------------------------------
+  it('queries the season board when a season is selected (#371)', async () => {
+    mockGetLeaderboardForSeason.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useLeaderboard(25, 3), { wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(mockGetLeaderboardForSeason).toHaveBeenCalledWith(3, 25);
+    expect(mockGetLeaderboard).not.toHaveBeenCalled();
+  });
+
+  it('ignores season 0 — the registry default before any season starts — and falls back to all-time', async () => {
+    mockGetLeaderboard.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useLeaderboard(10, 0), { wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(mockGetLeaderboard).toHaveBeenCalledWith(10);
+    expect(mockGetLeaderboardForSeason).not.toHaveBeenCalled();
+  });
+
+  it('ignores an undefined season — all-time board', async () => {
+    mockGetLeaderboard.mockResolvedValue([]);
+
+    renderHook(() => useLeaderboard(10, undefined), { wrapper });
+
+    await waitFor(() => expect(mockGetLeaderboard).toHaveBeenCalledWith(10));
+    expect(mockGetLeaderboardForSeason).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #371 — the registry's current season number
+// ---------------------------------------------------------------------------
+describe('useSeason Hook', () => {
+  let queryClient: QueryClient;
+
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    jest.clearAllMocks();
+  });
+
+  it('returns the registry season', async () => {
+    mockGetSeason.mockResolvedValue(2);
+
+    const { result } = renderHook(() => useSeason(), { wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBe(2);
+    expect(mockGetSeason).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces season 0 — no season started yet', async () => {
+    mockGetSeason.mockResolvedValue(0);
+
+    const { result } = renderHook(() => useSeason(), { wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBe(0);
+  });
+
+  it('surfaces RPC failures', async () => {
+    mockGetSeason.mockRejectedValue(new Error('rpc down'));
+
+    const { result } = renderHook(() => useSeason(), { wrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toEqual(new Error('rpc down'));
   });
 });
 

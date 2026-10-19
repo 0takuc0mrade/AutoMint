@@ -1,5 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//! AutoMint registry: user directory, unique usernames, point totals, and
+//! leaderboards.
+//!
+//! # Event catalogue (#370)
+//!
+//! Every state change publishes exactly one contract event. Topic layout is
+//! `(symbol_short!(<name>), <indexed address>?)` — the first topic is always a
+//! short `Symbol` so off-chain indexers can filter by event name, and the user
+//! address is the second topic wherever the event is per-user. The data payload
+//! carries the value an indexer needs to reconstruct state. Topic layouts are a
+//! public API: existing names/topics must not change, only be extended.
+//!
+//! | Event | Topics (after name) | Data | Emitted in |
+//! |-------|---------------------|------|------------|
+//! | `init` | `[admin: Address]` | `timestamp: u64` | `initialize()` |
+//! | `register` | `[user: Address]` | `timestamp: u64` | `register()` |
+//! | `writers` | *(none)* | `(accrual: Address, bot_nft: Address)` | `set_writers()` |
+//! | `addpoints` | `[user: Address]` | `points: u64` | `add_points()` (cross-contract) |
+//! | `inc_bot` | `[user: Address]` | `bot_count: u32` | `increment_bot_count()` (cross-contract) |
+//! | `dec_bot` | `[user: Address]` | `bot_count: u32` | `decrement_bot_count()` |
+//! | `claimed` | `[user: Address]` | `amount: i128` | `add_claimed_amt()` (cross-contract) |
+//! | `newseason` | *(none)* | `season: u32` | `start_new_season()` |
+//! | `set_admin` | *(none)* | `(current_admin: Address, new_admin: Address)` | `set_admin()` |
+//! | `adm_acpt` | *(none)* | `(old_admin: Address, new_admin: Address)` | `accept_admin()` |
+//! | `adm_cncl` | *(none)* | `(admin: Address, cancelled: Address)` | `cancel_admin_transfer()` |
+
 #![no_std]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
@@ -11,15 +37,27 @@ use soroban_sdk::{
 pub enum DataKey {
     // Per-user storage
     UserProfile(Address),
+    /// Username uniqueness mapping, keyed on the **ASCII-lowercased** form
+    /// (#373) so `Alice` and `alice` cannot both register. The original
+    /// casing the user typed is preserved in [`UserProfile::display_name`].
     UserPoints(Address),
     UserBotCount(Address),
     UserClaimedAmt(Address),
     Username(String),
+    /// Points earned by a user in a given season (#371). Persistent, per-user.
+    SeasonPoints(u32, Address),
     // Global storage
     /// Bounded leaderboard (#332): `Vec<(Address, u64)>` of at most
     /// `LEADERBOARD_SIZE` entries, sorted by points descending. Ties: the user
     /// who reached that total first ranks higher.
     TopUsers,
+    /// Per-season bounded leaderboard (#371): same `Vec<(Address, u64)>`
+    /// shape as [`DataKey::TopUsers`], keyed by season, so historical seasons
+    /// stay queryable after a new season starts. Instance storage, like
+    /// `TopUsers`, so the boards live as long as the contract instance.
+    SeasonTop(u32),
+    /// Current season counter (#371). Instance storage; absent = season 0.
+    Season,
     TotalUsers,
     Admin,
     PendingAdmin,
@@ -46,11 +84,30 @@ pub enum DataKey {
 #[contracttype]
 pub struct UserProfile {
     pub address: Address,
+    /// Normalized (ASCII-lowercased) username — the canonical identity used
+    /// for uniqueness (#373). Display the original casing via
+    /// [`UserProfile::display_name`].
     pub username: String,
+    /// The username exactly as the user registered it, casing preserved
+    /// (#373). Never used for uniqueness comparisons.
+    pub display_name: String,
     pub total_points: u64,
     pub claimed_amt: i128,
     pub registered_at: u64,
     pub bot_count: u32,
+}
+
+/// One row of a season leaderboard (#371). `season_points` is what the row is
+/// ranked by; `total_points` is the user's lifetime total, carried alongside
+/// so a UI can show both without a second call.
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct SeasonEntry {
+    pub address: Address,
+    /// Display username, original casing preserved (`display_name`).
+    pub display_name: String,
+    pub season_points: u64,
+    pub total_points: u64,
 }
 
 // #318: authorized writer set. The accrual contract may update points/claimed
@@ -115,6 +172,11 @@ impl RegistryContract {
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        // Emit initialization event (#370: every state change emits exactly
+        // one event; `initialize` was the only mutator without one).
+        env.events()
+            .publish((symbol_short!("init"), admin), env.ledger().timestamp());
         Ok(())
     }
 
@@ -135,11 +197,16 @@ impl RegistryContract {
             return Err(RegistryError::UsernameTaken);
         }
 
+        // #373: uniqueness is checked against the ASCII-lowercased form so
+        // `Alice` and `alice` are the same identity; the original casing the
+        // user typed is preserved in `display_name`.
+        let normalized = Self::ascii_lower(&env, &username);
+
         // Check for username uniqueness
         if env
             .storage()
             .persistent()
-            .has(&DataKey::Username(username.clone()))
+            .has(&DataKey::Username(normalized.clone()))
         {
             return Err(RegistryError::UsernameTaken);
         }
@@ -147,7 +214,8 @@ impl RegistryContract {
         // Create new user profile with initial values
         let profile = UserProfile {
             address: user.clone(),
-            username: username.clone(),
+            username: normalized.clone(),
+            display_name: username.clone(),
             total_points: 0,
             claimed_amt: 0,
             registered_at: env.ledger().timestamp(),
@@ -156,10 +224,10 @@ impl RegistryContract {
 
         Self::persist_profile(&env, &user, &profile);
 
-        // Store username mapping
+        // Store username mapping (lowercased key)
         env.storage()
             .persistent()
-            .set(&DataKey::Username(username), &user);
+            .set(&DataKey::Username(normalized), &user);
 
         // While the leaderboard has room, a new (0-point) user joins at the
         // end so small deployments still list every registered user in
@@ -195,10 +263,45 @@ impl RegistryContract {
         Ok(())
     }
 
-    pub fn is_registered(env: Env, user: Address) -> bool {
-        env.storage().persistent().has(&DataKey::UserProfile(user))
+    /// #373: ASCII-only lowercase for username normalization.
+    ///
+    /// `soroban_sdk::String` has no `to_lowercase` under `no_std`, so bytes are
+    /// copied out, `A..=Z` shifted to `a..=z`, and rebuilt. Non-ASCII bytes are
+    /// left untouched — normalization is deliberately ASCII-only so UTF-8
+    /// usernames round-trip without mangling.
+    fn ascii_lower(env: &Env, s: &String) -> String {
+        let len = s.len() as usize;
+        // Usernames are validated to be <= 32 bytes before this is called;
+        // fall back to a heap-free bounded copy rather than panicking if that
+        // ever changes.
+        let mut buf = [0u8; 32];
+        let n = len.min(buf.len());
+        s.copy_into_slice(&mut buf[..n]);
+        for b in buf[..n].iter_mut() {
+            if b.is_ascii_uppercase() {
+                *b += 32;
+            }
+        }
+        String::from_bytes(env, &buf[..n])
     }
 
+    /// #372: registration check performs the *same* read `get_user` performs
+    /// (a persistent `.get()`), so the two can never disagree about an
+    /// address — both see the profile, or both see it as absent/archived.
+    ///
+    /// Both functions are **archival-sensitive**: if a profile's TTL lapses,
+    /// the persistent entry is archived and both reads fail identically
+    /// (on mainnet the transaction never reaches the contract). Keep any
+    /// future registration probe based on this same read.
+    pub fn is_registered(env: Env, user: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, UserProfile>(&DataKey::UserProfile(user))
+            .is_some()
+    }
+
+    /// #372: reads the profile from persistent storage. Archival-sensitive —
+    /// see [`Self::is_registered`], which performs this exact read.
     pub fn get_user(env: Env, user: Address) -> Result<UserProfile, RegistryError> {
         env.storage()
             .persistent()
@@ -352,6 +455,25 @@ impl RegistryContract {
         profile.total_points = profile.total_points.saturating_add(points);
         Self::persist_profile(&env, &user, &profile);
         Self::update_top(&env, &user, profile.total_points);
+
+        // #371: mirror the gain into the current season's total so the
+        // season leaderboard moves alongside the lifetime one. Season entries
+        // are persistent per-user records with their own TTL, renewed on
+        // every write.
+        let season = Self::current_season(&env);
+        let season_key = DataKey::SeasonPoints(season, user.clone());
+        let season_total: u64 = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&season_key)
+            .unwrap_or(0)
+            .saturating_add(points);
+        env.storage().persistent().set(&season_key, &season_total);
+        env.storage()
+            .persistent()
+            .extend_ttl(&season_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        Self::update_season_top(&env, season, &user, season_total);
+
         env.events()
             .publish((symbol_short!("addpoints"), user), points);
         Ok(())
@@ -369,6 +491,19 @@ impl RegistryContract {
             .get(&DataKey::UserProfile(user.clone()))
             .ok_or(RegistryError::NotRegistered)?;
         profile.bot_count = profile.bot_count.saturating_add(1);
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserProfile(user.clone()), &profile);
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserProfile(user.clone()),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+        // #370: indexers previously saw bot counts drop (`dec_bot`) but never
+        // rise; mirror that event's topic/data style with the post-increment
+        // count as the payload.
+        env.events()
+            .publish((symbol_short!("inc_bot"), user), profile.bot_count);
         Self::persist_profile(&env, &user, &profile);
         Ok(())
     }
@@ -411,6 +546,18 @@ impl RegistryContract {
             return Ok(());
         }
         profile.claimed_amt = profile.claimed_amt.saturating_add(amount);
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserProfile(user.clone()), &profile);
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserProfile(user.clone()),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+        // #370: AMT claim totals were previously invisible to indexers; emit
+        // the claimed delta in the same topic style as `addpoints`.
+        env.events()
+            .publish((symbol_short!("claimed"), user), amount);
         Self::persist_profile(&env, &user, &profile);
         Ok(())
     }
@@ -422,14 +569,13 @@ impl RegistryContract {
             .unwrap_or_else(|| Vec::new(env))
     }
 
-    /// Incrementally maintain the bounded top-N list (#332). Cost is O(N) with
-    /// N = `LEADERBOARD_SIZE`, independent of total user count. Points only
-    /// ever increase, so a user already listed is moved up; an unlisted user
-    /// enters only if the list has room or strictly beats the current floor
-    /// (a tie with the floor keeps the incumbent, who reached the total first).
-    fn update_top(env: &Env, user: &Address, new_total: u64) {
-        let mut top = Self::load_top(env);
-
+    /// In-place bounded top-N maintenance (#332 lifetime board, #371 season
+    /// boards). Cost is O(N) with N = `LEADERBOARD_SIZE`, independent of total
+    /// user count. Points only ever increase, so a user already listed is
+    /// moved up; an unlisted user enters only if the list has room or strictly
+    /// beats the current floor (a tie with the floor keeps the incumbent, who
+    /// reached the total first). Returns `true` when `top` was modified.
+    fn apply_to_top(top: &mut Vec<(Address, u64)>, user: &Address, new_total: u64) -> bool {
         let mut was_listed = false;
         let mut i = 0;
         while i < top.len() {
@@ -444,7 +590,7 @@ impl RegistryContract {
         if !was_listed && top.len() >= LEADERBOARD_SIZE {
             let floor = top.last().map(|e| e.1).unwrap_or(0);
             if new_total <= floor {
-                return; // list unchanged (nothing was removed)
+                return false; // list unchanged (nothing was removed)
             }
         }
 
@@ -462,7 +608,39 @@ impl RegistryContract {
         if top.len() > LEADERBOARD_SIZE {
             top.pop_back();
         }
-        env.storage().instance().set(&DataKey::TopUsers, &top);
+        true
+    }
+
+    /// Incrementally maintain the bounded top-N lifetime list (#332).
+    fn update_top(env: &Env, user: &Address, new_total: u64) {
+        let mut top = Self::load_top(env);
+        if Self::apply_to_top(&mut top, user, new_total) {
+            env.storage().instance().set(&DataKey::TopUsers, &top);
+        }
+    }
+
+    /// Current season counter (#371). Absent key means season 0 — the season
+    /// in effect until `start_new_season` is first called.
+    fn current_season(env: &Env) -> u32 {
+        env.storage().instance().get(&DataKey::Season).unwrap_or(0)
+    }
+
+    fn load_season_top(env: &Env, season: u32) -> Vec<(Address, u64)> {
+        env.storage()
+            .instance()
+            .get(&DataKey::SeasonTop(season))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    /// Incrementally maintain the bounded top-N list for one season (#371),
+    /// sharing the lifetime board's eviction/tie semantics.
+    fn update_season_top(env: &Env, season: u32, user: &Address, new_total: u64) {
+        let mut top = Self::load_season_top(env, season);
+        if Self::apply_to_top(&mut top, user, new_total) {
+            env.storage()
+                .instance()
+                .set(&DataKey::SeasonTop(season), &top);
+        }
     }
 
     /// Top users by points, highest first. Reads the maintained `TopUsers`
@@ -486,6 +664,71 @@ impl RegistryContract {
                 .get::<_, UserProfile>(&DataKey::UserProfile(addr))
             {
                 result.push_back(p);
+            }
+        }
+        result
+    }
+
+    /// Current season counter (#371). Season 0 is in effect until
+    /// [`Self::start_new_season`] is first called.
+    pub fn get_season(env: Env) -> u32 {
+        Self::current_season(&env)
+    }
+
+    /// Roll the registry over to the next season (#371). Admin-only.
+    ///
+    /// Increments the season counter and starts the new season's leaderboard
+    /// empty: season points are stored under `DataKey::SeasonPoints(season,
+    /// user)`, so a fresh season number means every user starts from zero
+    /// while lifetime `total_points` and every past season's board
+    /// (`SeasonTop`/`SeasonPoints` keyed by the old number) remain intact and
+    /// queryable. Returns the new season number and emits `newseason`.
+    pub fn start_new_season(env: Env) -> Result<u32, RegistryError> {
+        let admin = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+            .ok_or(RegistryError::NotInitialized)?;
+        admin.require_auth();
+
+        let season = Self::current_season(&env)
+            .checked_add(1)
+            .ok_or(RegistryError::Overflow)?;
+        env.storage().instance().set(&DataKey::Season, &season);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.events().publish((symbol_short!("newseason"),), season);
+        Ok(season)
+    }
+
+    /// Top users by **season** points, highest first (#371). Reads the
+    /// maintained `SeasonTop(season)` list — same bounded, O(LEADERBOARD_SIZE)
+    /// hydration as [`Self::get_leaderboard`] — so the cost does not depend on
+    /// the total number of users, and historical seasons stay queryable.
+    /// Equal season totals are ordered by who reached the total first.
+    pub fn get_leaderboard_for_season(env: Env, season: u32, limit: u32) -> Vec<SeasonEntry> {
+        let mut result: Vec<SeasonEntry> = Vec::new(&env);
+        if limit == 0 {
+            return result;
+        }
+        let top = Self::load_season_top(&env, season);
+        let take = limit.min(LEADERBOARD_SIZE);
+        for (addr, season_points) in top.iter() {
+            if result.len() >= take {
+                break;
+            }
+            if let Some(p) = env
+                .storage()
+                .persistent()
+                .get::<_, UserProfile>(&DataKey::UserProfile(addr))
+            {
+                result.push_back(SeasonEntry {
+                    address: p.address,
+                    display_name: p.display_name,
+                    season_points,
+                    total_points: p.total_points,
+                });
             }
         }
         result
@@ -646,10 +889,8 @@ extern crate std;
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{
-        testutils::{Address as _, MockAuth, MockAuthInvoke},
-        Env, IntoVal, String,
-    };
+    use soroban_sdk::testutils::{Address as _, Events, MockAuth, MockAuthInvoke};
+    use soroban_sdk::{Env, IntoVal, String, Symbol, TryFromVal, Val};
 
     fn setup() -> (Env, Address, RegistryContractClient<'static>) {
         let env = Env::default();
@@ -1094,7 +1335,8 @@ mod test {
         client.add_claimed_amt(&user, &100_i128);
         client.increment_bot_count(&user);
         let profile = client.get_user(&user);
-        assert_eq!(profile.username, String::from_str(&env, "FullCheck"));
+        assert_eq!(profile.username, String::from_str(&env, "fullcheck"));
+        assert_eq!(profile.display_name, String::from_str(&env, "FullCheck"));
         assert_eq!(profile.total_points, 42);
         assert_eq!(profile.claimed_amt, 100);
         assert_eq!(profile.bot_count, 1);
@@ -1153,12 +1395,13 @@ mod test {
         assert_eq!(batch.len(), 3);
         let p0 = batch.get(0).unwrap().unwrap();
         assert_eq!(p0.address, u1);
-        assert_eq!(p0.username, String::from_str(&env, "Alice"));
+        assert_eq!(p0.username, String::from_str(&env, "alice"));
+        assert_eq!(p0.display_name, String::from_str(&env, "Alice"));
         assert_eq!(p0.total_points, 10);
         assert!(batch.get(1).unwrap().is_none());
         let p2 = batch.get(2).unwrap().unwrap();
         assert_eq!(p2.address, u2);
-        assert_eq!(p2.username, String::from_str(&env, "Bob"));
+        assert_eq!(p2.username, String::from_str(&env, "bob"));
     }
 
     #[test]
@@ -1328,7 +1571,8 @@ mod test {
         assert_eq!(profile.bot_count, 1);
         assert_eq!(profile.total_points, 77);
         assert_eq!(profile.claimed_amt, 333);
-        assert_eq!(profile.username, username);
+        assert_eq!(profile.username, String::from_str(&env, "fieldguard"));
+        assert_eq!(profile.display_name, username);
         assert_eq!(profile.address, user);
     }
 
@@ -1363,6 +1607,7 @@ mod test {
 
         assert_eq!(profile.address, user);
         assert_eq!(profile.username, username);
+        assert_eq!(profile.display_name, username);
         assert_eq!(profile.total_points, 0);
         assert_eq!(profile.claimed_amt, 0);
         assert_eq!(profile.bot_count, 0);
@@ -1384,20 +1629,76 @@ mod test {
         assert_eq!(client.total_users(), initial_count + 2);
     }
 
+    // #373: usernames are case-insensitive for uniqueness but preserve the
+    // original casing for display.
     #[test]
-    fn test_register_username_case_sensitive() {
+    fn test_register_username_case_insensitive_rejects_mixed_case_duplicate() {
         let (env, _admin, client) = setup();
         let user1 = Address::generate(&env);
         let user2 = Address::generate(&env);
 
         client.register(&user1, &String::from_str(&env, "TestUser"));
-        client.register(&user2, &String::from_str(&env, "testuser"));
+        // Same name, different casing — must be rejected.
+        assert_eq!(
+            client.try_register(&user2, &String::from_str(&env, "testuser")),
+            Err(Ok(RegistryError::UsernameTaken))
+        );
+        assert!(!client.is_registered(&user2));
 
-        // Both should succeed since usernames are case-sensitive
-        let profile1 = client.get_user(&user1);
-        let profile2 = client.get_user(&user2);
-        assert_eq!(profile1.username, String::from_str(&env, "TestUser"));
-        assert_eq!(profile2.username, String::from_str(&env, "testuser"));
+        // The original registration keeps its casing for display while the
+        // canonical `username` is normalized.
+        let profile = client.get_user(&user1);
+        assert_eq!(profile.username, String::from_str(&env, "testuser"));
+        assert_eq!(profile.display_name, String::from_str(&env, "TestUser"));
+    }
+
+    // #373: the reverse order fails too — normalization cannot be bypassed by
+    // registering the lowercase form first.
+    #[test]
+    fn test_register_username_case_insensitive_rejects_uppercase_duplicate() {
+        let (env, _admin, client) = setup();
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+
+        client.register(&user1, &String::from_str(&env, "testuser"));
+        assert_eq!(
+            client.try_register(&user2, &String::from_str(&env, "TestUser")),
+            Err(Ok(RegistryError::UsernameTaken))
+        );
+        assert!(!client.is_registered(&user2));
+        assert_eq!(client.total_users(), 1);
+    }
+
+    // #373: names differing only outside ASCII case (digits/underscore) stay
+    // distinct; ASCII letters alone are folded.
+    #[test]
+    fn test_register_username_distinct_when_not_only_case_apart() {
+        let (env, _admin, client) = setup();
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+
+        client.register(&user1, &String::from_str(&env, "TestUser1"));
+        client.register(&user2, &String::from_str(&env, "testuser2"));
+        assert!(client.is_registered(&user1));
+        assert!(client.is_registered(&user2));
+    }
+
+    // #373: a failed case-collision attempt leaves the username slot free for
+    // the intended owner.
+    #[test]
+    fn test_register_username_collision_leaves_slot_free() {
+        let (env, _admin, client) = setup();
+        let squatter = Address::generate(&env);
+        let owner = Address::generate(&env);
+
+        assert_eq!(
+            client.try_register(&squatter, &String::from_str(&env, "Alice")),
+            Ok(Ok(()))
+        );
+        assert_eq!(
+            client.try_register(&owner, &String::from_str(&env, "ALICE")),
+            Err(Ok(RegistryError::UsernameTaken))
+        );
     }
 
     // ── is_registered edge cases (#91) ──────────────────────────────────────
@@ -1456,7 +1757,10 @@ mod test {
         assert!(client.is_registered(&user));
         // Profile data is unchanged after repeated reads
         let profile = client.get_user(&user);
-        assert_eq!(profile.username, String::from_str(&env, "IdempotentUser"));
+        assert_eq!(
+            profile.display_name,
+            String::from_str(&env, "IdempotentUser")
+        );
     }
 
     // #91: Fresh contract (initialized but no registrations) returns false
@@ -1608,7 +1912,8 @@ mod test {
         automint_testutils::advance_ledger(&env, LEDGER_BUMP / 2);
 
         let profile = client.get_user(&user);
-        assert_eq!(profile.username, String::from_str(&env, "Ttl1"));
+        assert_eq!(profile.username, String::from_str(&env, "ttl1"));
+        assert_eq!(profile.display_name, String::from_str(&env, "Ttl1"));
     }
 
     // An entry whose TTL is never refreshed becomes archived once the
@@ -1674,7 +1979,7 @@ mod test {
         automint_testutils::advance_ledger(&env, LEDGER_BUMP);
 
         let profile = client.get_user(&user);
-        assert_eq!(profile.username, String::from_str(&env, "Ttl3"));
+        assert_eq!(profile.username, String::from_str(&env, "ttl3"));
         assert_eq!(profile.total_points, 10);
     }
 
@@ -1821,6 +2126,407 @@ mod test {
             Err(Ok(RegistryError::NotInitialized))
         );
     }
+
+    // ── #370: every mutating function emits exactly one event ──────────────
+    //
+    // `env.events().all()` accumulates every contract event the Env has seen,
+    // so each helper snapshots the count before the call, asserts the delta is
+    // exactly one (never zero, never two), checks the emitter is the registry,
+    // and hands back the (topics, data) for shape assertions. `Val` itself has
+    // no `PartialEq`, so topics/data are decoded to concrete types first —
+    // the same style accrual's event tests use.
+
+    fn capture_single_event<F: FnOnce()>(
+        env: &Env,
+        contract: &Address,
+        f: F,
+    ) -> (soroban_sdk::Vec<Val>, Val) {
+        let before = env.events().all().len();
+        f();
+        let events = env.events().all();
+        assert_eq!(
+            events.len(),
+            before + 1,
+            "mutating call must emit exactly one event"
+        );
+        let (emitter, topics, data) = events.last().unwrap();
+        assert_eq!(
+            emitter, *contract,
+            "event must be emitted by the registry contract"
+        );
+        (topics, data)
+    }
+
+    fn topic_sym(env: &Env, topics: &soroban_sdk::Vec<Val>, i: u32) -> Symbol {
+        Symbol::try_from_val(env, &topics.get(i).unwrap()).unwrap()
+    }
+
+    fn topic_addr(env: &Env, topics: &soroban_sdk::Vec<Val>, i: u32) -> Address {
+        Address::try_from_val(env, &topics.get(i).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn test_initialize_emits_exactly_one_init_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, RegistryContract);
+        let client = RegistryContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+
+        let (topics, data) =
+            capture_single_event(&env, &client.address, || client.initialize(&admin));
+        assert_eq!(topics.len(), 2);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("init"));
+        assert_eq!(topic_addr(&env, &topics, 1), admin);
+        let ts: u64 = u64::try_from_val(&env, &data).unwrap();
+        assert_eq!(ts, env.ledger().timestamp());
+    }
+
+    #[test]
+    fn test_register_emits_exactly_one_register_event() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+
+        let (topics, data) = capture_single_event(&env, &client.address, || {
+            client.register(&user, &String::from_str(&env, "EvtUser"))
+        });
+        assert_eq!(topics.len(), 2);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("register"));
+        assert_eq!(topic_addr(&env, &topics, 1), user);
+        let ts: u64 = u64::try_from_val(&env, &data).unwrap();
+        assert_eq!(ts, env.ledger().timestamp());
+    }
+
+    #[test]
+    fn test_set_writers_emits_exactly_one_writers_event() {
+        let (env, _admin, client) = setup();
+        let accrual = Address::generate(&env);
+        let bot_nft = Address::generate(&env);
+
+        let (topics, data) = capture_single_event(&env, &client.address, || {
+            client.set_writers(&accrual, &bot_nft)
+        });
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("writers"));
+        let (a, b): (Address, Address) = <(Address, Address)>::try_from_val(&env, &data).unwrap();
+        assert_eq!(a, accrual);
+        assert_eq!(b, bot_nft);
+    }
+
+    #[test]
+    fn test_add_points_emits_exactly_one_addpoints_event() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "PtsEvt"));
+
+        let (topics, data) =
+            capture_single_event(&env, &client.address, || client.add_points(&user, &250_u64));
+        assert_eq!(topics.len(), 2);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("addpoints"));
+        assert_eq!(topic_addr(&env, &topics, 1), user);
+        let points: u64 = u64::try_from_val(&env, &data).unwrap();
+        assert_eq!(points, 250);
+    }
+
+    #[test]
+    fn test_add_points_zero_is_noop_emits_no_event() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "ZeroEvt"));
+        let before = env.events().all().len();
+
+        client.add_points(&user, &0_u64);
+        assert_eq!(
+            env.events().all().len(),
+            before,
+            "a zero-point no-op must not emit an event"
+        );
+    }
+
+    #[test]
+    fn test_increment_bot_count_emits_exactly_one_inc_bot_event() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "BotEvt"));
+
+        let (topics, data) =
+            capture_single_event(&env, &client.address, || client.increment_bot_count(&user));
+        assert_eq!(topics.len(), 2);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("inc_bot"));
+        assert_eq!(topic_addr(&env, &topics, 1), user);
+        let count: u32 = u32::try_from_val(&env, &data).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_decrement_bot_count_emits_exactly_one_dec_bot_event() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "BotDecEvt"));
+        client.increment_bot_count(&user);
+
+        let (topics, data) =
+            capture_single_event(&env, &client.address, || client.decrement_bot_count(&user));
+        assert_eq!(topics.len(), 2);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("dec_bot"));
+        assert_eq!(topic_addr(&env, &topics, 1), user);
+        let count: u32 = u32::try_from_val(&env, &data).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_add_claimed_amt_emits_exactly_one_claimed_event() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "ClaimEvt"));
+
+        let (topics, data) = capture_single_event(&env, &client.address, || {
+            client.add_claimed_amt(&user, &750_i128)
+        });
+        assert_eq!(topics.len(), 2);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("claimed"));
+        assert_eq!(topic_addr(&env, &topics, 1), user);
+        let amount: i128 = i128::try_from_val(&env, &data).unwrap();
+        assert_eq!(amount, 750);
+    }
+
+    #[test]
+    fn test_add_claimed_amt_zero_is_noop_emits_no_event() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "ZeroClaim"));
+        let before = env.events().all().len();
+
+        client.add_claimed_amt(&user, &0_i128);
+        assert_eq!(
+            env.events().all().len(),
+            before,
+            "a zero-amount no-op must not emit an event"
+        );
+    }
+
+    #[test]
+    fn test_start_new_season_emits_exactly_one_newseason_event() {
+        let (env, _admin, client) = setup();
+
+        let (topics, data) = capture_single_event(&env, &client.address, || {
+            client.start_new_season();
+        });
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("newseason"));
+        let season: u32 = u32::try_from_val(&env, &data).unwrap();
+        assert_eq!(season, 1);
+    }
+
+    #[test]
+    fn test_admin_transfer_functions_each_emit_exactly_one_event() {
+        let (env, _admin, client) = setup();
+        let new_admin = Address::generate(&env);
+
+        let (topics, data) =
+            capture_single_event(&env, &client.address, || client.set_admin(&new_admin));
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("set_admin"));
+        let (a, b): (Address, Address) = <(Address, Address)>::try_from_val(&env, &data).unwrap();
+        assert_eq!(a, _admin);
+        assert_eq!(b, new_admin);
+
+        let (topics, data) = capture_single_event(&env, &client.address, || client.accept_admin());
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("adm_acpt"));
+        let (a, b): (Address, Address) = <(Address, Address)>::try_from_val(&env, &data).unwrap();
+        assert_eq!(a, _admin);
+        assert_eq!(b, new_admin);
+
+        // Re-propose so a transfer is pending, then cancel it.
+        let newer = Address::generate(&env);
+        client.set_admin(&newer);
+        let (topics, data) =
+            capture_single_event(&env, &client.address, || client.cancel_admin_transfer());
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topic_sym(&env, &topics, 0), symbol_short!("adm_cncl"));
+        let (a, b): (Address, Address) = <(Address, Address)>::try_from_val(&env, &data).unwrap();
+        assert_eq!(a, new_admin);
+        assert_eq!(b, newer);
+    }
+
+    // ── #371: seasons ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_season_defaults_to_zero() {
+        let (_env, _admin, client) = setup();
+        assert_eq!(client.get_season(), 0);
+    }
+
+    #[test]
+    fn test_add_points_accumulates_current_season_and_lifetime() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "SeasonUser"));
+        client.add_points(&user, &100_u64);
+        client.add_points(&user, &50_u64);
+
+        assert_eq!(client.get_user(&user).total_points, 150);
+        let board = client.get_leaderboard_for_season(&0, &10);
+        assert_eq!(board.len(), 1);
+        assert_eq!(board.get(0).unwrap().season_points, 150);
+        assert_eq!(board.get(0).unwrap().total_points, 150);
+        assert_eq!(
+            board.get(0).unwrap().display_name,
+            String::from_str(&env, "SeasonUser")
+        );
+        assert_eq!(board.get(0).unwrap().address, user);
+    }
+
+    #[test]
+    fn test_start_new_season_zeroes_board_but_keeps_lifetime_and_history() {
+        let (env, _admin, client) = setup();
+        let u1 = Address::generate(&env);
+        let u2 = Address::generate(&env);
+        client.register(&u1, &String::from_str(&env, "Alpha"));
+        client.register(&u2, &String::from_str(&env, "Bravo"));
+        client.add_points(&u1, &100_u64);
+        client.add_points(&u2, &50_u64);
+
+        assert_eq!(client.get_season(), 0);
+        assert_eq!(client.start_new_season(), 1);
+        assert_eq!(client.get_season(), 1);
+
+        // The new season's board starts empty…
+        assert_eq!(client.get_leaderboard_for_season(&1, &10).len(), 0);
+        // …lifetime totals persist…
+        assert_eq!(client.get_user(&u1).total_points, 100);
+        assert_eq!(client.get_leaderboard(&10).len(), 2);
+        // …and season 0's board remains queryable, in rank order.
+        let historical = client.get_leaderboard_for_season(&0, &10);
+        assert_eq!(historical.len(), 2);
+        assert_eq!(historical.get(0).unwrap().season_points, 100);
+        assert_eq!(historical.get(1).unwrap().season_points, 50);
+
+        // Points earned after the rollover land in season 1 only.
+        client.add_points(&u1, &10_u64);
+        let current = client.get_leaderboard_for_season(&1, &10);
+        assert_eq!(current.len(), 1);
+        assert_eq!(current.get(0).unwrap().season_points, 10);
+        assert_eq!(current.get(0).unwrap().total_points, 110);
+        // Season 0 is frozen: historical boards never change after rollover.
+        assert_eq!(
+            client
+                .get_leaderboard_for_season(&0, &10)
+                .get(0)
+                .unwrap()
+                .season_points,
+            100
+        );
+    }
+
+    #[test]
+    fn test_start_new_season_rolls_multiple_seasons() {
+        let (_env, _admin, client) = setup();
+        assert_eq!(client.start_new_season(), 1);
+        assert_eq!(client.start_new_season(), 2);
+        assert_eq!(client.get_season(), 2);
+        assert_eq!(client.get_leaderboard_for_season(&0, &10).len(), 0);
+        assert_eq!(client.get_leaderboard_for_season(&1, &10).len(), 0);
+        assert_eq!(client.get_leaderboard_for_season(&2, &10).len(), 0);
+    }
+
+    #[test]
+    fn test_get_leaderboard_for_season_limit_and_empty_seasons() {
+        let (env, _admin, client) = setup();
+        // Unknown/never-populated season: empty, not an error.
+        assert_eq!(client.get_leaderboard_for_season(&7, &10).len(), 0);
+
+        let names = ["s0", "s1", "s2", "s3", "s4"];
+        for (i, name) in names.iter().enumerate() {
+            let u = Address::generate(&env);
+            client.register(&u, &String::from_str(&env, name));
+            client.add_points(&u, &((i as u64 + 1) * 10));
+        }
+        let board = client.get_leaderboard_for_season(&0, &3);
+        assert_eq!(board.len(), 3);
+        assert_eq!(board.get(0).unwrap().season_points, 50);
+        assert_eq!(board.get(1).unwrap().season_points, 40);
+        assert_eq!(board.get(2).unwrap().season_points, 30);
+        // limit 0 returns empty rather than everything.
+        assert_eq!(client.get_leaderboard_for_season(&0, &0).len(), 0);
+    }
+
+    // Season points live in persistent storage and renew their TTL on every
+    // write — the same keepalive property the profile tests cover, applied to
+    // the new SeasonPoints key. The instance-level SeasonTop/Season keys are
+    // renewed by register()/start_new_season(); here we only isolate the
+    // per-user season entry.
+    #[test]
+    fn test_season_points_survive_past_original_ttl_when_renewed() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "TtlSeason"));
+        client.add_points(&user, &40_u64);
+
+        // Renew the SeasonPoints TTL just before the original expiry…
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP - 1);
+        client.add_points(&user, &5_u64);
+        // Keep the contract instance itself alive (register renews it).
+        let keepalive = Address::generate(&env);
+        client.register(&keepalive, &String::from_str(&env, "SKeep"));
+
+        // …then blow past the original expiry ledger.
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP);
+
+        let board = client.get_leaderboard_for_season(&0, &10);
+        assert_eq!(board.len(), 1);
+        assert_eq!(board.get(0).unwrap().season_points, 45);
+    }
+
+    // ── #372: is_registered and get_user never disagree ─────────────────────
+
+    // Both functions perform the same persistent `.get()` read, so at every
+    // point in the TTL window they must reach the same conclusion: registered
+    // while the entry is live, and (in this harness) the same archived-entry
+    // failure once the ledger passes live_until_ledger_seq.
+    #[test]
+    fn test_is_registered_and_get_user_agree_across_ttl_boundary() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "TtlAgree"));
+
+        // Mid-window: both report registered.
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP / 2);
+        assert!(client.is_registered(&user));
+        assert_eq!(
+            client.is_registered(&user),
+            client.try_get_user(&user).is_ok()
+        );
+
+        // One ledger before expiry: still in agreement.
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP / 2 - 1);
+        assert!(client.is_registered(&user));
+        assert_eq!(
+            client.is_registered(&user),
+            client.try_get_user(&user).is_ok()
+        );
+
+        // Past the TTL: the entry is archived. The harness escalates archived
+        // access to a hard panic (matching mainnet, where the transaction never
+        // reaches the contract), so agreement means both reads fail the same
+        // way — the UI can never observe "registered" alongside a failed
+        // profile read.
+        automint_testutils::advance_past_ttl(&env, LEDGER_BUMP);
+        let reg =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client.is_registered(&user)));
+        let get =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client.try_get_user(&user)));
+        assert_eq!(
+            reg.is_err(),
+            get.is_err(),
+            "is_registered and get_user must agree at the archival boundary"
+        );
+        assert!(
+            reg.is_err(),
+            "archived entry must fail, not read as unregistered"
+        );
+    }
 }
 
 // ── Issue #543: explicit authorization tests ──────────────────────────────
@@ -1866,6 +2572,46 @@ mod auth_tests {
         }]);
         let result = client.try_initialize(&admin);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_start_new_season_fails_without_admin_auth() {
+        let env = Env::default();
+        let id = env.register_contract(None, RegistryContract);
+        let client = RegistryContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        env.mock_all_auths();
+        client.initialize(&admin);
+
+        // No authorizations mocked — only the admin may roll the season over.
+        env.mock_auths(&[]);
+        let result = client.try_start_new_season();
+        assert!(result.is_err());
+        // The counter must be untouched after the failed attempt.
+        assert_eq!(client.get_season(), 0);
+    }
+
+    #[test]
+    fn test_start_new_season_succeeds_with_admin_auth() {
+        let env = Env::default();
+        let id = env.register_contract(None, RegistryContract);
+        let client = RegistryContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        env.mock_all_auths();
+        client.initialize(&admin);
+
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "start_new_season",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_start_new_season();
+        assert_eq!(result, Ok(Ok(1)));
+        assert_eq!(client.get_season(), 1);
     }
 
     #[test]

@@ -94,6 +94,13 @@ export const CONTRACT_ADDRESSES: Readonly<Record<ContractName, string>> = {
 export const TX_TIMEOUT = Number(process.env.NEXT_PUBLIC_TX_TIMEOUT) || 30;
 export const BASE_FEE = process.env.NEXT_PUBLIC_BASE_FEE ?? "100";
 
+/**
+ * Mirrors the accrual contract's `points_per_amt` deploy default
+ * (`scripts/deploy.sh --points_per_amt 100`); kept in lockstep by the
+ * contractParity suite (#539).
+ */
+export const POINTS_PER_AMT = 100;
+
 /** Leaderboard pagination limit. */
 export const LEADERBOARD_LIMIT = Number(process.env.NEXT_PUBLIC_LEADERBOARD_LIMIT) || 50;
 

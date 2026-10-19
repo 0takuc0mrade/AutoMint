@@ -23,7 +23,7 @@ import { ErrorState } from "@/components/ui/ErrorState";
 import { Wallet, Loader2, Bot } from "lucide-react";
 import clsx from "clsx";
 import type { BotNFT } from "@/types";
-import { useReduceMotion } from "@/hooks/useReduceMotion";
+
 
 export default function DashboardPage() {
   const { publicKey, isConnected, connect, isConnecting } = useWallet();
@@ -73,8 +73,6 @@ export default function DashboardPage() {
   const claim = useClaim();
 
   const [pendingPoints, setPendingPoints] = useState<bigint>(BigInt(0));
-
-  const reduceMotion = useReduceMotion();
 
   const isAnyError = isRegError || isProfileError || isBotsError || isAccrualError || isBotsDetailsError;
   const activeError = regError || profileError || botsError || accrualError || botsDetailsError;
@@ -264,6 +262,7 @@ export default function DashboardPage() {
     <div className="mx-auto max-w-7xl px-6 py-8">
       <div className="mb-8">
         <h1 className="font-display text-3xl font-bold text-text sm:text-4xl">
+          Welcome back, {profile?.display_name || profile?.username || "User"}!
           Welcome back!
         </h1>
         <p className="mt-2 text-sm text-muted">

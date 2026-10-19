@@ -39,8 +39,6 @@ import { TIER_ORDER } from "@/types";
 // specs) are never executed at runtime — they are type-checked only.
 import type { UserProfile as ContractUserProfile } from "./bindings/registry/src";
 import type { BotTier as ContractBotTier } from "./bindings/bot_nft/src";
-import type { Client as RegistryGeneratedClient } from "./bindings/registry/src";
-import type { Client as BotNftGeneratedClient } from "./bindings/bot_nft/src";
 
 // Compile-time check: domain UserProfile must cover the contract's shape.
 // Using `extends` with `unknown` ensures the check does not error even if the
@@ -204,19 +202,24 @@ async function buildTxXdr(
 /**
  * Parse a raw scVal map from the registry contract into a typed UserProfile.
  *
- * The on-chain struct carries six fields: `address`, `username`,
- * `total_points`, `claimed_amt`, `registered_at`, `bot_count`. All are
- * required and validated via {@link toBigInt}; an absent or garbage field
+ * The on-chain struct carries `address`, `username`, `display_name`,
+ * `total_points`, `claimed_amt`, `registered_at`, `bot_count`. The numeric
+ * fields are validated via {@link toBigInt}; an absent or garbage field
  * throws naming the field. `points` is retained as an alias for
  * `total_points` and `claimedAmt`/`registeredAt`/`botCount` as camelCase
  * aliases for their snake_case contract fields so existing UI code keeps
  * working while the leaderboard/profile pages can render the full struct.
+ *
+ * `display_name` (#373) preserves the casing the user registered with;
+ * profiles recorded before #373 (and older mocks) omit it, so it falls back
+ * to the normalized `username` rather than throwing.
  */
 export function parseUserProfile(
   rawData: Record<string, unknown>
 ): UserProfile {
   const address = String(rawData.address ?? "");
   const username = String(rawData.username ?? "");
+  const display_name = String(rawData.display_name || username);
   const total_points = toBigInt(rawData.total_points, "total_points");
   // The three fields below are genuinely on-chain but older mocks / fixtures
   // may omit them; treat as optional with explicit 0 fallback so a missing
@@ -231,6 +234,7 @@ export function parseUserProfile(
   return {
     address,
     username,
+    display_name,
     total_points,
     points: total_points,
     claimed_amt,
@@ -438,6 +442,69 @@ export async function getLeaderboard(
     );
   }
   return raw.map((entry) => parseUserProfile(entry));
+}
+
+/**
+ * The registry's current season number (#371). Season `0` is the default
+ * before an admin has called `start_new_season`; each call rolls the number
+ * forward and starts a fresh season board.
+ */
+export async function getSeason(sourceAddress?: string): Promise<number> {
+  const raw = await simulateContractCall<number>(
+    CONTRACT_ADDRESSES.registry,
+    "get_season",
+    [],
+    defaultSource(sourceAddress)
+  );
+  return Number(raw);
+}
+
+/**
+ * One season's leaderboard rows (#371), ranked by `season_points`.
+ *
+ * Mapped onto the `UserProfile` shape the table already renders: `points`
+ * carries the season total (what the row is ranked by), `total_points`
+ * keeps the lifetime total the contract sends alongside, and the
+ * claim/registration fields are zeroed — they are not part of a season row.
+ */
+export async function getLeaderboardForSeason(
+  season: number,
+  limit: number = 50,
+  sourceAddress?: string
+): Promise<UserProfile[]> {
+  const raw = await simulateContractCall<Record<string, unknown>[]>(
+    CONTRACT_ADDRESSES.registry,
+    "get_leaderboard_for_season",
+    [
+      nativeToScVal(season, { type: "u32" }),
+      nativeToScVal(limit, { type: "u32" }),
+    ],
+    defaultSource(sourceAddress)
+  );
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `get_leaderboard_for_season returned unexpected type ${typeof raw}; expected array`
+    );
+  }
+  return raw.map((entry) => {
+    const address = String(entry.address ?? "");
+    const display_name = String(entry.display_name ?? "");
+    const season_points = toBigInt(entry.season_points, "season_points");
+    const total_points = toBigInt(entry.total_points, "total_points");
+    return {
+      address,
+      username: display_name,
+      display_name,
+      total_points,
+      points: season_points,
+      claimed_amt: 0n,
+      claimedAmt: 0n,
+      registered_at: 0,
+      registeredAt: 0,
+      bot_count: 0,
+      botCount: 0,
+    };
+  });
 }
 
 /**

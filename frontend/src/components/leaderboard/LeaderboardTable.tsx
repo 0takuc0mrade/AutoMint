@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import clsx from "clsx";
 import { formatPoints, type AccrualState, type UserProfile } from "@/types";
 import type { UserRank } from "@/lib/contracts";
-import { truncateAddress, fullAddressTitle, fullAddressAriaLabel, useCopyToClipboard } from "@/lib/truncateAddress";
+import { truncateAddress, fullAddressTitle, fullAddressAriaLabel } from "@/lib/truncateAddress";
 
 /**
  * A leaderboard row: exactly the profile the registry returns, plus the
@@ -51,76 +51,6 @@ const RANK_ICON: Record<number, { icon: string; color: string; label: string }> 
   2: { icon: "🥈", color: "text-tier-silver", label: "2nd place" },
   3: { icon: "🥉", color: "text-tier-bronze", label: "3rd place" },
 };
-
-function LeaderboardCard({
-  user,
-  isCurrentUser,
-  rankMeta,
-  index,
-}: {
-  user: LeaderboardUser;
-  isCurrentUser: boolean;
-  rankMeta: (typeof RANK_ICON)[number] | undefined;
-  index: number;
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: -8 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.25, delay: index * 0.04 }}
-      data-testid={`user-card-${user.rank}`}
-      aria-current={isCurrentUser ? "true" : undefined}
-      className={clsx(
-        "rounded-xl border border-liner p-4 transition-colors",
-        isCurrentUser
-          ? "bg-gold/5 border-l-2 border-l-gold ring-1 ring-gold/30"
-          : "bg-card hover:bg-white/[0.02]",
-      )}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          {rankMeta ? (
-            <span className={clsx("inline-flex items-center gap-1.5", rankMeta.color)}>
-              <span aria-hidden="true" className="text-xl leading-none">
-                {rankMeta.icon}
-              </span>
-              <span aria-hidden="true" className="text-sm font-bold text-text">
-                {user.rank}
-              </span>
-              <span className="sr-only">{rankMeta.label}</span>
-            </span>
-          ) : (
-            <span className="text-muted">
-              <span aria-hidden="true" className="font-bold">#{user.rank}</span>
-              <span className="sr-only">Rank {user.rank}</span>
-            </span>
-          )}
-        </div>
-        {isCurrentUser && (
-          <span className="rounded-full bg-gold/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gold">
-            You
-          </span>
-        )}
-      </div>
-      <div className="mt-2">
-        <span className={clsx("font-medium", isCurrentUser ? "text-gold" : "text-text")}>
-          {user.username || `Trader #${user.rank}`}
-        </span>
-      </div>
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <span className="font-semibold text-text">{user.points.toLocaleString()} pts</span>
-        {user.address && (
-          <span className="font-mono text-xs text-muted"
-  title={fullAddressTitle(user.address)}
-  aria-label={fullAddressAriaLabel(user.address)}
->
-  {truncateAddress(user.address)}
-</span>
-        )}
-      </div>
-    </motion.div>
-  );
-}
 
 function LeaderboardTableComponent({
   users,
@@ -183,8 +113,15 @@ function LeaderboardTableComponent({
               normalizedCurrentAddress !== null &&
               user.address.toLowerCase() === normalizedCurrentAddress;
             const rankMeta = RANK_ICON[user.rank];
+            // #373 — prefer the preserved-casing display name; fall back to
+            // the hydrated profile, then the normalized username.
+            const hydrated = profiles?.[user.address];
             const displayUsername =
-              profiles?.[user.address]?.username || user.username || `Trader #${user.rank}`;
+              hydrated?.display_name ||
+              user.display_name ||
+              hydrated?.username ||
+              user.username ||
+              `Trader #${user.rank}`;
 
             return (
               <motion.tr

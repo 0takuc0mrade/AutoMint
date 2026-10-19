@@ -17,7 +17,7 @@ jest.mock("framer-motion", () => ({
 const mockBots: BotNFT[] = [
   {
     id: 1n,
-    name: "Basic Bot",
+    nickname: "Basic Bot",
     owner: "GABC",
     tier: "Basic",
     accrual_rate: 1n,
@@ -26,7 +26,7 @@ const mockBots: BotNFT[] = [
   },
   {
     id: 2n,
-    name: "Gold Bot",
+    nickname: "Gold Bot",
     owner: "GABC",
     tier: "Gold",
     accrual_rate: 10n,

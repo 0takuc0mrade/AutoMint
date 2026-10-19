@@ -31,11 +31,26 @@ The indexer listens to events from the **five deployed contracts**:
 
 ## Registry contract
 
+Every state-changing registry entry point publishes exactly one event
+(#370–#373). Zero-amount/zero-point calls are no-ops and publish **no** event.
+
 | Event | Topics (after name) | Data | Emitted in |
 |-------|---------------------|------|-----------|
+| `init` | `[admin: Address]` | `timestamp: u64` | `initialize()` |
 | `register` | `[user: Address]` | `timestamp: u64` | `register()` |
+| `writers` | *(none)* | `(accrual: Address, bot_nft: Address)` | `set_writers()` |
 | `addpoints` | `[user: Address]` | `points: u64` | `add_points()` (cross-contract) |
+| `inc_bot` | `[user: Address]` | `bot_count: u32` | `increment_bot_count()` |
 | `dec_bot` | `[user: Address]` | `bot_count: u32` | `decrement_bot_count()` |
+| `claimed` | `[user: Address]` | `amount: i128` (decimal string in JSON) | `add_claimed_amt()` (#370) |
+| `newseason` | *(none)* | `season: u32` | `start_new_season()` (#371) |
+| `set_admin` | *(none)* | `(current_admin: Address, new_admin: Address)` | `set_admin()` (two-step, #372) |
+| `adm_acpt` | *(none)* | `(current_admin: Address, pending: Address)` | `accept_admin()` (#372) |
+| `adm_cncl` | *(none)* | `(current_admin: Address, pending: Address)` | `cancel_admin_transfer()` (#372) |
+
+Note the registry's `set_admin` payload is a **two-address tuple** (current →
+pending); the token contract's own `set_admin` (below) still publishes only the
+new admin — same event name, different contracts.
 
 ## Bot NFT contract
 

@@ -21,7 +21,7 @@ export function useCopyToClipboard(address: string) {
       await navigator.clipboard.writeText(address);
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
-    } catch (err) {
+    } catch {
       fallbackCopy(address);
     }
   }, [address]);

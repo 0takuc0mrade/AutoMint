@@ -4,6 +4,7 @@
     "prettier"
   ],
   "plugins": ["@typescript-eslint"],
+  "ignorePatterns": ["src/lib/bindings/"],
   "rules": {
     "no-console": ["warn", { "allow": ["warn", "error"] }],
     "no-unused-vars": "off",

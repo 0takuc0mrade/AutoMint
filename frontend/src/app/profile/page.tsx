@@ -112,7 +112,9 @@ export default function ProfilePage() {
         <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
           My Profile
         </h1>
-        <p className="mt-1 text-base font-medium text-gold">{profile.username}</p>
+        <p className="mt-1 text-base font-medium text-gold">
+          {profile.display_name || profile.username}
+        </p>
         <p className="mt-1 text-gray-600 dark:text-gray-400 font-mono text-sm">{walletAddr}</p>
       </div>
 

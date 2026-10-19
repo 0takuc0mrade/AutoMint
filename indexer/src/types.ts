@@ -20,9 +20,14 @@ export type ContractName = (typeof CONTRACT_NAMES)[number];
  * taken from the actual `env.events().publish(...)` calls in the contract
  * source (see docs/EVENTS.md for the full schema). */
 export const EVENT_NAMES = [
+  "init",
   "register",
+  "writers",
   "addpoints",
+  "inc_bot",
   "dec_bot",
+  "claimed",
+  "newseason",
   "mint",
   "transfer",
   "start",
@@ -33,6 +38,8 @@ export const EVENT_NAMES = [
   "approve",
   "burn",
   "set_admin",
+  "adm_acpt",
+  "adm_cncl",
 ] as const;
 
 export type EventName = (typeof EVENT_NAMES)[number];

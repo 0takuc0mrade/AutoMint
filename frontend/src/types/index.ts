@@ -10,6 +10,11 @@ export interface UserProfile {
    *  reads it from the registry's `UserProfile.address` field. */
   address: string;
   username: string;
+  /** Display username, original casing preserved (#373). The registry stores
+   *  it alongside the ASCII-lowercased `username` it compares for uniqueness;
+   *  `parseUserProfile` falls back to `username` for profiles recorded before
+   *  #373 shipped. */
+  display_name: string;
   /** Total points accrued on-chain (registry `total_points`). */
   total_points: bigint;
   /** Alias for `total_points` kept for existing UI code. */
@@ -28,7 +33,7 @@ export interface UserProfile {
 export interface BotNFT {
   id: bigint;
   /** Owner-set nickname; undefined when unset. Use `tier` to derive a display name. */
-  nickname?: string;
+  nickname?: string | undefined;
   owner: string;
   tier: BotTier;
   accrual_rate: bigint;

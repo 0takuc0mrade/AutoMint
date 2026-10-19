@@ -691,6 +691,26 @@ describe("getUserRank", () => {
     });
   });
 
+  it("propagates unexpected get_rank simulation failures", async () => {
+    const rpcError = new Error("RPC unavailable");
+    mockSimulate
+      .mockResolvedValueOnce(board)
+      .mockRejectedValueOnce(rpcError)
+      .mockResolvedValueOnce({ address: "GD", username: "D", total_points: 42n });
+
+    await expect(getUserRank("GD", "GSRC")).rejects.toBe(rpcError);
+  });
+
+  it("propagates profile lookup failures after the missing-method fallback", async () => {
+    const rpcError = new Error("RPC unavailable");
+    mockSimulate
+      .mockResolvedValueOnce(board)
+      .mockRejectedValueOnce(new Error("unknown function get_rank"))
+      .mockRejectedValueOnce(rpcError);
+
+    await expect(getUserRank("GD", "GSRC")).rejects.toBe(rpcError);
+  });
+
   it("resolves to null when the address has no registry profile", async () => {
     mockSimulate
       .mockResolvedValueOnce(board)

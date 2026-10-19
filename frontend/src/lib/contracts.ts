@@ -537,11 +537,18 @@ export interface UserRank {
 /**
  * Ask the registry directly where a user stands (AM-052's `get_rank`).
  *
- * Returns `null` — never throws — when the user is unranked, when they are
- * not registered, or when the deployed registry predates `get_rank`. The
- * caller falls back to deriving the rank from the leaderboard ordering,
- * which is the same ordering `get_rank` reports.
+ * Returns `null` for the unranked sentinel or when the deployed registry
+ * predates `get_rank`; other simulation errors propagate to the caller.
  */
+function isMissingGetRankMethod(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    /(?:unknown|no such|missing|unsupported)\s+(?:contract\s+)?(?:function|method)\s+[`'"]?get_rank\b/i.test(
+      error.message,
+    ) || /\bno\s+get_rank\b/i.test(error.message)
+  );
+}
+
 async function getRegistryRank(
   userAddress: string,
   sourceAddress: string
@@ -558,8 +565,9 @@ async function getRegistryRank(
       return null;
     }
     return rank;
-  } catch {
-    return null;
+  } catch (error) {
+    if (isMissingGetRankMethod(error)) return null;
+    throw error;
   }
 }
 
@@ -593,7 +601,7 @@ export async function getUserRank(
   // position, and the user's own profile for their points.
   const [rank, profile] = await Promise.all([
     getRegistryRank(userAddress, source),
-    getUserProfile(userAddress).catch(() => null),
+    getUserProfile(userAddress),
   ]);
 
   if (!profile) return null;

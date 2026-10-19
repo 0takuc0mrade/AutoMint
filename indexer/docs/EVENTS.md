@@ -22,8 +22,10 @@ The indexer listens to events from the **five deployed contracts**:
   The first topic is always a `symbol` — the event name. The remaining topics
   are indexed as `topics[1..]`; the value is the `data` payload.
 - `Address` topics/payloads decode to their StrKey string (`G...`/`C...`).
-- `u64`/`u32` decode to JS `number`; **`i128`/`u128` decode to `bigint`** and
-  are serialized as **decimal strings** in JSON/SQLite so no precision is lost.
+- `u32` decodes to JS `number`; `u64`, `i128`, and `u128` decode to `bigint`
+  and are serialized as **decimal strings** in JSON/SQLite. Listing and bot IDs
+  remain text in the derived SQLite table; conversions to JS numbers reject
+  values outside the safe-integer range.
 - `Tier` (bot_nft) is a `#[contracttype]` enum **without** `#[repr(u32)]`, so it
   serializes as a **symbol** (`"Basic"`, `"Advanced"`, `"Premium"`).
 - Only events where `inSuccessfulContractCall == true` are indexed — events
@@ -124,4 +126,3 @@ Assumptions made in place of the missing ticket context:
 
 These are the exact items to confirm with the contract owners before this
 indexer is considered complete for production.
-

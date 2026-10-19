@@ -28,6 +28,17 @@ import {
 
 const config = testConfig();
 
+describe("numeric normalization", () => {
+  it("rejects bigint values that cannot be represented safely as numbers", () => {
+    expect(() => toNum(BigInt(Number.MAX_SAFE_INTEGER) + 1n)).toThrow(RangeError);
+  });
+
+  it("preserves full-width identifiers as decimal strings", () => {
+    const listingId = 18_446_744_073_709_551_615n;
+    expect(toDecimal(listingId)).toBe("18446744073709551615");
+  });
+});
+
 describe("decodeRawEvent", () => {
   it("registry.register: topics=[user], data=timestamp(u64)", () => {
     const ev = decodeRawEvent(
@@ -380,4 +391,3 @@ describe("contractNameFor / makeDecoder", () => {
     expect(ev.contractId).toBe(CMAR);
   });
 });
-

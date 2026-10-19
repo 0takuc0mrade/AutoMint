@@ -22,6 +22,20 @@ import Database from "better-sqlite3";
 import type { DailyRow, DecodedEvent, EventRow, Summary } from "./types.js";
 import { jsonStringify, toDecimal, toNum } from "./events.js";
 
+const LISTINGS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS listings (
+  listing_id    TEXT PRIMARY KEY,
+  seller        TEXT,
+  bot_id        TEXT,
+  bot_tier      TEXT,
+  price         TEXT,
+  currency      TEXT,
+  listed_at     INTEGER,
+  listed_ledger INTEGER,
+  status        TEXT NOT NULL
+);
+`;
+
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -48,18 +62,7 @@ CREATE TABLE IF NOT EXISTS checkpoint (
   last_ledger INTEGER NOT NULL,
   updated_at TEXT NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS listings (
-  listing_id    INTEGER PRIMARY KEY,
-  seller        TEXT,
-  bot_id        INTEGER,
-  bot_tier      TEXT,
-  price         TEXT,
-  currency      TEXT,
-  listed_at     INTEGER,
-  listed_ledger INTEGER,
-  status        TEXT NOT NULL
-);
+${LISTINGS_SCHEMA}
 `;
 
 export class IndexerDb {
@@ -69,6 +72,7 @@ export class IndexerDb {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    this.migrateListingIdentifiers();
   }
 
   get raw(): Database.Database {
@@ -140,17 +144,17 @@ export class IndexerDb {
     );
   }
 
-  private applyDerivedState(event: DecodedEvent): void {
-    if (event.contract !== "marketplace") return;
-
+  private applyListingState(
+    event: Pick<DecodedEvent, "event" | "topics" | "data" | "ledger">,
+  ): void {
     if (event.event === "listed") {
       // data = [bot_id, price]
       const [botId, price] = (event.data as unknown[]) ?? [];
       const [seller, listingId] = event.topics as [unknown, unknown];
       this.insertListingStmt().run(
-        toNum(listingId),
+        toDecimal(listingId),
         typeof seller === "string" ? seller : null,
-        toNum(botId),
+        toDecimal(botId),
         null, // bot_tier not emitted by the contract today (AM-099 unresolved)
         toDecimal(price),
         null,
@@ -158,13 +162,56 @@ export class IndexerDb {
         event.ledger,
       );
     } else if (event.event === "bought" || event.event === "cancelled") {
-      const listingId = toNum(event.topics[1]);
+      const listingId = toDecimal(event.topics[1]);
       // Ensure a row exists even if we never saw the original `listed` event
       // (e.g. indexing started mid-history): the floor-price query only looks
       // at status = 'active', so an unknown/absent listing cannot distort it.
       this.touchListingStmt().run(listingId);
       this.closeListingStmt().run(event.event === "bought" ? "sold" : "cancelled", listingId);
     }
+  }
+
+  private applyDerivedState(event: DecodedEvent): void {
+    if (event.contract !== "marketplace") return;
+    this.applyListingState(event);
+  }
+
+  private migrateListingIdentifiers(): void {
+    const columns = this.db.pragma("table_info(listings)") as {
+      name: string;
+      type: string;
+    }[];
+    const listingIdType = columns.find(({ name }) => name === "listing_id")?.type.toUpperCase();
+    const botIdType = columns.find(({ name }) => name === "bot_id")?.type.toUpperCase();
+    if (listingIdType === "TEXT" && botIdType === "TEXT") {
+      return;
+    }
+
+    const existingEvents = this.db
+      .prepare(
+        `SELECT event, topics_json, data_json, ledger
+         FROM events WHERE contract = 'marketplace' ORDER BY rowid`,
+      )
+      .all() as {
+      event: string;
+      topics_json: string;
+      data_json: string;
+      ledger: number;
+    }[];
+
+    this.db.transaction(() => {
+      this.db.exec("ALTER TABLE listings RENAME TO listings_legacy");
+      this.db.exec(LISTINGS_SCHEMA);
+      this.db.exec("DROP TABLE listings_legacy");
+      for (const event of existingEvents) {
+        this.applyListingState({
+          event: event.event,
+          topics: JSON.parse(event.topics_json) as unknown[],
+          data: JSON.parse(event.data_json) as unknown,
+          ledger: event.ledger,
+        });
+      }
+    })();
   }
 
   /**
@@ -390,5 +437,3 @@ export class IndexerDb {
     };
   }
 }
-
-

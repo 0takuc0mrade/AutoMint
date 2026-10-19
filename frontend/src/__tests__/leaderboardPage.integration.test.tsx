@@ -56,10 +56,13 @@ jest.mock("@/hooks/useLeaderboardAccruals", () => ({
 jest.mock("framer-motion", () => ({
   motion: {
     tr: ({ children, ...props }: React.PropsWithChildren<Record<string, unknown>>) => {
-      const { initial, animate, transition, whileHover, ...rest } = props as Record<
-        string,
-        unknown
-      > & { children?: React.ReactNode };
+      const {
+        initial: _initial,
+        animate: _animate,
+        transition: _transition,
+        whileHover: _whileHover,
+        ...rest
+      } = props as Record<string, unknown> & { children?: React.ReactNode };
       return <tr {...rest}>{children}</tr>;
     },
   },

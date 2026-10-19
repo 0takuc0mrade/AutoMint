@@ -2,6 +2,7 @@
 
 #![no_std]
 use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, IntoVal, Vec,
 };
@@ -33,6 +34,7 @@ pub trait RegistryInterface {
 pub trait TokenInterface {
     fn mint(env: Env, to: Address, amount: i128);
     fn decimals(env: Env) -> u32;
+    fn accept_admin(env: Env);
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,6 +59,7 @@ pub enum DataKey {
     /// Set by the admin to block a user's accrual actions (#413).
     Frozen(Address),
     ReentrancyGuard,
+    Token,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -191,6 +194,7 @@ impl AccrualContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::BotNft, &bot_nft);
         env.storage().instance().set(&DataKey::Registry, &registry);
+        env.storage().instance().set(&DataKey::Token, &token);
 
         // Read the token's decimal count and derive the scale factor (#410).
         // Cached here so claim() never needs a cross-contract call for it.
@@ -222,6 +226,29 @@ impl AccrualContract {
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
+        Ok(())
+    }
+
+    /// Accepts a pending token-admin nomination for this accrual contract.
+    /// Only the accrual admin may trigger the contract-authenticated call.
+    pub fn accept_token_admin(env: Env) -> Result<(), AccrualError> {
+        require_admin(&env)?;
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(AccrualError::NotInitialized)?;
+        let mut auth_entries = Vec::new(&env);
+        auth_entries.push_back(InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: token.clone(),
+                fn_name: soroban_sdk::Symbol::new(&env, "accept_admin"),
+                args: Vec::new(&env),
+            },
+            sub_invocations: Vec::new(&env),
+        }));
+        env.authorize_as_current_contract(auth_entries);
+        TokenClient::new(&env, &token).accept_admin();
         Ok(())
     }
 
@@ -644,7 +671,8 @@ impl AccrualContract {
         let old_val = current_config.points_per_amt;
 
         // Bound changes to at most 2x jump in either direction
-        if points_per_amt > old_val.saturating_mul(2) || points_per_amt.saturating_mul(2) < old_val {
+        if points_per_amt > old_val.saturating_mul(2) || points_per_amt.saturating_mul(2) < old_val
+        {
             return Err(AccrualError::InvalidConfig);
         }
 
@@ -656,10 +684,8 @@ impl AccrualContract {
             },
         );
 
-        env.events().publish(
-            (symbol_short!("cfg_upd"), admin),
-            (old_val, points_per_amt),
-        );
+        env.events()
+            .publish((symbol_short!("cfg_upd"), admin), (old_val, points_per_amt));
 
         Ok(())
     }

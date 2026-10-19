@@ -38,7 +38,12 @@ You should see five artifacts: `automint_registry.wasm`, `automint_bot_nft.wasm`
 
 ## 1. Generate and Fund a Deployer Key
 
-The deployer key becomes the **admin** of all five contracts. It is the only account that can `Token::mint`, `Token::set_admin`, and receive marketplace fees, so treat it accordingly — see [ADR-0005](./adr/0005-admin-and-upgrade-strategy.md).
+The deployer key initializes all five contracts and remains the admin of the
+Registry, BotNFT, Accrual, and Marketplace contracts. Deployment then proposes
+the Accrual contract as the AMT Token admin; the deployer invokes
+`Accrual::accept_token_admin`, which accepts using the Accrual contract's own
+authorization so claims can mint AMT. Treat the deployer identity carefully —
+see [ADR-0005](./adr/0005-admin-and-upgrade-strategy.md).
 
 ### 1.1 Generate the identity
 

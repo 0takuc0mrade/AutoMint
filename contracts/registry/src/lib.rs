@@ -555,10 +555,8 @@ impl RegistryContract {
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
-        env.events().publish(
-            (symbol_short!("set_admin"),),
-            (current_admin, new_admin),
-        );
+        env.events()
+            .publish((symbol_short!("set_admin"),), (current_admin, new_admin));
         Ok(())
     }
 
@@ -586,10 +584,8 @@ impl RegistryContract {
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
-        env.events().publish(
-            (symbol_short!("adm_acpt"),),
-            (current_admin, pending),
-        );
+        env.events()
+            .publish((symbol_short!("adm_acpt"),), (current_admin, pending));
         Ok(())
     }
 
@@ -616,10 +612,8 @@ impl RegistryContract {
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
-        env.events().publish(
-            (symbol_short!("adm_cncl"),),
-            (current_admin, pending),
-        );
+        env.events()
+            .publish((symbol_short!("adm_cncl"),), (current_admin, pending));
         Ok(())
     }
 

@@ -1056,6 +1056,39 @@ export async function getUserProfile(userAddress: string): Promise<UserProfile |
   return parseUserProfile(profileRaw);
 }
 
+/** Read only the user's points scalar, without decoding their profile string. */
+export async function getUserPoints(userAddress: string): Promise<bigint> {
+  const raw = await simulateContractCall<unknown>(
+    CONTRACT_ADDRESSES.registry,
+    "get_points",
+    [nativeToScVal(userAddress, { type: "address" })],
+    userAddress
+  );
+  return toBigInt(raw, "points");
+}
+
+/** Read only the user's bot count scalar. */
+export async function getUserBotCount(userAddress: string): Promise<number> {
+  const raw = await simulateContractCall<unknown>(
+    CONTRACT_ADDRESSES.registry,
+    "get_bot_count",
+    [nativeToScVal(userAddress, { type: "address" })],
+    userAddress
+  );
+  return Number(toBigInt(raw, "bot_count"));
+}
+
+/** Read only the user's claimed AMT scalar. */
+export async function getUserClaimedAmt(userAddress: string): Promise<bigint> {
+  const raw = await simulateContractCall<unknown>(
+    CONTRACT_ADDRESSES.registry,
+    "get_claimed_amt",
+    [nativeToScVal(userAddress, { type: "address" })],
+    userAddress
+  );
+  return toBigInt(raw, "claimed_amt");
+}
+
 /** Most addresses `get_users_batch` accepts in one call. */
 export const MAX_USERS_BATCH = 50;
 

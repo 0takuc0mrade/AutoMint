@@ -3,7 +3,7 @@
 import { useWallet } from "@/hooks/useWallet";
 import {
   useRegistered,
-  useProfile,
+  useProfilePoints,
   useBots,
   useAccrualState,
   useClaim,
@@ -37,12 +37,12 @@ export default function DashboardPage() {
   } = useRegistered();
 
   const {
-    data: profile,
+    data: profilePoints,
     isError: isProfileError,
     error: profileError,
-    refetch: refetchProfile,
-    isRefetching: isProfileRefetching,
-  } = useProfile();
+    refetch: refetchProfilePoints,
+    isRefetching: isProfilePointsRefetching,
+  } = useProfilePoints();
 
   const {
     data: botIds,
@@ -76,12 +76,12 @@ export default function DashboardPage() {
 
   const isAnyError = isRegError || isProfileError || isBotsError || isAccrualError || isBotsDetailsError;
   const activeError = regError || profileError || botsError || accrualError || botsDetailsError;
-  const isRetrying = isRegRefetching || isProfileRefetching || isBotsRefetching || isBotsDetailsRefetching;
+  const isRetrying = isRegRefetching || isProfilePointsRefetching || isBotsRefetching || isBotsDetailsRefetching;
 
   // Check if any query is loading
   const isLoading =
     isCheckingRegistration ||
-    isProfileRefetching ||
+    isProfilePointsRefetching ||
     isBotsRefetching ||
     isBotsDetailsRefetching ||
     isAccrualRefetching ||
@@ -89,7 +89,7 @@ export default function DashboardPage() {
 
   const handleRetryAll = () => {
     refetchReg();
-    refetchProfile();
+    refetchProfilePoints();
     refetchBots();
     refetchAccrual();
     refetchBotsDetails();
@@ -263,6 +263,7 @@ export default function DashboardPage() {
       <div className="mb-8">
         <h1 className="font-display text-3xl font-bold text-text sm:text-4xl">
           Welcome back, {profile?.display_name || profile?.username || "User"}!
+          Welcome back!
         </h1>
         <p className="mt-2 text-sm text-muted">
           Track your points and manage your AI bot collection.
@@ -288,7 +289,7 @@ export default function DashboardPage() {
         <div className="flex flex-col gap-6">
           {/* Points Counter */}
           <PointsCounter
-            points={isLoading ? 0 : Number(profile?.points || BigInt(0))}
+            points={isLoading ? 0 : Number(profilePoints || BigInt(0))}
             rate={isLoading ? 0 : totalRate}
             bots={isLoading ? [] : bots || []}
             amtBalance={isLoading ? BigInt(0) : amtBalance ?? BigInt(0)}

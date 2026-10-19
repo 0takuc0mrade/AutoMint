@@ -132,11 +132,56 @@
 //!   Topics: ("price_upd", seller, listing_id), Data: (old_price, new_price)
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
-    Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token,
+    Address, Env, String, Symbol, Vec,
 };
 
-use automint_bot_nft::{BotNFT, BotNFTContractClient, BotTier};
+/// The bot_nft entry points marketplace calls, declared locally instead of
+/// depending on `automint-bot-nft`: linking another contract's rlib pulls its
+/// exported functions (`initialize`, ...) into this wasm, where the duplicate
+/// `initialize` silently drops ours from the export table — and the registry
+/// chain that dependency used to pull broke this wasm's link outright. Same
+/// pattern as accrual's `RegistryInterface` (#346c800). Typed errors from the
+/// callee surface through `try_*`.
+#[contractclient(name = "BotNFTContractClient")]
+pub trait BotNftInterface {
+    fn get_bot(env: Env, bot_id: u64) -> BotNFT;
+    fn admin(env: Env) -> Address;
+    fn transfer(env: Env, bot_id: u64, from: Address, to: Address);
+}
+
+/// Local mirror of bot_nft's `BotTier`: same variant names, order, and
+/// discriminants, so values encode identically on the wire; see
+/// `BotNftInterface`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[contracttype]
+#[repr(u32)]
+pub enum BotTier {
+    Basic = 0,
+    Bronze = 1,
+    Silver = 2,
+    Gold = 3,
+    Diamond = 4,
+}
+
+/// Local mirror of bot_nft's `BotNFT`: same field names and order, so
+/// cross-contract values decode identically; see `BotNftInterface`.
+#[derive(Clone)]
+#[contracttype]
+pub struct BotNFT {
+    pub id: u64,
+    pub tier: BotTier,
+    pub owner: Address,
+    pub minter: Address,
+    pub accrual_rate: u64,
+    pub minted_at: u64,
+    /// Owner-settable nickname (max 24 bytes); `None` when unset.
+    pub nickname: Option<String>,
+    /// Deterministic variant (0..=7) assigned at mint, used for rarity.
+    pub variant: u32,
+    /// Deterministic bonus bps (0..500) on top of the tier base accrual rate.
+    pub bonus_bps: u32,
+}
 
 #[derive(Clone)]
 #[contracttype]

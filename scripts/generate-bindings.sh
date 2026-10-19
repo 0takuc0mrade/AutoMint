@@ -46,7 +46,8 @@ done
 # type-only imports in contracts.ts, without requiring a perfect WASM spec.
 for f in "$OUT_BASE"/*/src/index.ts; do
   if ! head -1 "$f" | grep -q "ts-nocheck"; then
-    sed -i '1i// @ts-nocheck' "$f"
+    # prepend, portable across BSD (macOS) and GNU sed
+    { printf '%s\n' '// @ts-nocheck'; cat "$f"; } > "$f.tmp" && mv "$f.tmp" "$f"
   fi
 done
 

@@ -133,6 +133,7 @@ impl DeploymentBuilder {
         // Mirror `scripts/deploy.sh#wire_token_admin`: the accrual contract is
         // the token admin so `claim` can mint AMT (#417).
         token.set_admin(&accrual_id);
+        accrual.accept_token_admin();
 
         let marketplace_id = env.register_contract(None, MarketplaceContract);
         let marketplace = MarketplaceContractClient::new(&env, &marketplace_id);

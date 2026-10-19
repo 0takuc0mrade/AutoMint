@@ -35,7 +35,7 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace -- -D warnings
       - name: cargo test
-        run: cargo test --workspace
+        run: PROPTEST_CASES=1000 cargo test --workspace
       - name: cargo build wasm
         run: cargo build --target wasm32v1-none --release -p automint-registry -p automint-token -p automint-bot-nft -p automint-accrual -p automint-marketplace
       - name: Upload wasm artifacts

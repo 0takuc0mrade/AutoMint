@@ -2,9 +2,24 @@
 
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Bytes, Env,
-    IntoVal, String, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token,
+    Address, Bytes, Env, IntoVal, String, Vec,
 };
+
+/// The registry entry points bot_nft calls, declared locally rather than
+/// depending on `automint-registry`: that dependency links the registry's
+/// exported functions (`initialize`, `accept_admin`, ...) into this wasm, and
+/// the linker either rejects the duplicate symbols outright (the marketplace
+/// wasm link failure) or silently drops ours — bot_nft's own `initialize`
+/// export vanished from its wasm this way. Same rationale as accrual's
+/// `RegistryInterface` (#346c800 fix). Return types are the unit type so a
+/// typed error from the callee surfaces through `try_*` as
+/// `soroban_sdk::Error`, whose code is the callee's error discriminant.
+#[contractclient(name = "RegistryClient")]
+pub trait RegistryInterface {
+    fn increment_bot_count(env: Env, user: Address);
+    fn decrement_bot_count(env: Env, user: Address);
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[contracttype]
@@ -985,7 +1000,7 @@ impl BotNFTContract {
                 return;
             }
         };
-        let reg_client = automint_registry::RegistryContractClient::new(env, &registry);
+        let reg_client = RegistryClient::new(env, &registry);
         // Use the fallible client so a registry-side error (e.g. the owner is
         // not registered yet) is swallowed rather than panicking the flow (#399).
         if reg_client.try_increment_bot_count(user).is_err() {
@@ -1007,7 +1022,7 @@ impl BotNFTContract {
                 return;
             }
         };
-        let reg_client = automint_registry::RegistryContractClient::new(env, &registry);
+        let reg_client = RegistryClient::new(env, &registry);
         if reg_client.try_decrement_bot_count(user).is_err() {
             env.events().publish(
                 (symbol_short!("regfail"), user.clone()),

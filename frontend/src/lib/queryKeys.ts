@@ -61,6 +61,7 @@ export const GC_TIME = {
 export const qk = {
   registered: (address: string | null): QueryKey => ["registered", address],
   profile: (address: string | null): QueryKey => ["profile", address],
+  profilePoints: (address: string | null): QueryKey => ["profilePoints", address],
   profiles: (addresses: string[]): QueryKey => ["profiles", addresses.join(",")],
   bots: (address: string | null): QueryKey => ["bots", address],
   /**
@@ -87,7 +88,13 @@ export const qk = {
   dashboard: (address: string | null): QueryKey => ["dashboard", address],
   listings: (): QueryKey => ["listings"],
   myListings: (address: string | null): QueryKey => ["myListings", address],
-  leaderboard: (limit: number): QueryKey => ["leaderboard", limit],
+  leaderboard: (limit: number, season?: number): QueryKey => [
+    "leaderboard",
+    limit,
+    // #371 — the same limit on the season board is a different query.
+    season ?? "all-time",
+  ],
+  season: (): QueryKey => ["season"],
   leaderboardAccruals: (addresses: string[]): QueryKey => [
     "leaderboardAccruals",
     addresses.join(","),

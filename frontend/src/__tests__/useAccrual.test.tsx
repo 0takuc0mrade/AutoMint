@@ -4,6 +4,7 @@ import {
   useRegister,
   useRegistered,
   useProfile,
+  useProfilePoints,
   useBots,
   useAccrualState,
   useAmtBalance,
@@ -13,6 +14,7 @@ import {
 import {
   isRegistered,
   getUserProfile,
+  getUserPoints,
   getUserBots,
   getAccrualState,
   getAccrualConfig,
@@ -38,6 +40,7 @@ jest.mock('sonner');
 
 const mockIsRegistered = isRegistered as jest.MockedFunction<typeof isRegistered>;
 const mockGetUserProfile = getUserProfile as jest.MockedFunction<typeof getUserProfile>;
+const mockGetUserPoints = getUserPoints as jest.MockedFunction<typeof getUserPoints>;
 const mockGetUserBots = getUserBots as jest.MockedFunction<typeof getUserBots>;
 const mockGetAccrualState = getAccrualState as jest.MockedFunction<typeof getAccrualState>;
 const mockGetAccrualConfig = getAccrualConfig as jest.MockedFunction<typeof getAccrualConfig>;
@@ -322,6 +325,18 @@ describe('useAccrual Hooks', () => {
       await waitFor(() => expect(result.current.isError).toBe(true));
 
       expect(result.current.error).toEqual(error);
+    });
+  });
+
+  describe('useProfilePoints', () => {
+    it('reads the lightweight points projection for the connected wallet', async () => {
+      mockGetUserPoints.mockResolvedValue(250n);
+
+      const { result } = renderHook(() => useProfilePoints(), { wrapper });
+
+      await waitFor(() => expect(result.current.data).toBe(250n));
+      expect(mockGetUserPoints).toHaveBeenCalledWith(mockPublicKey);
+      expect(mockGetUserProfile).not.toHaveBeenCalled();
     });
   });
 

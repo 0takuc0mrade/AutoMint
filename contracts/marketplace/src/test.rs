@@ -2,8 +2,12 @@
 
 #![cfg(test)]
 #![allow(clippy::inconsistent_digit_grouping)]
+/// This crate's own `BotTier` under an alias: the explicit `BotTier` import
+/// above shadows the `super::*` glob (bot_nft's client arguments need it),
+/// while `tier_stats` and `DataKey::TierStats` take the marketplace type.
+use super::BotTier as MktBotTier;
 use super::*;
-use automint_bot_nft::BotNFTContractClient;
+use automint_bot_nft::{BotNFTContractClient, BotTier};
 use automint_registry::RegistryContractClient;
 use automint_testutils::{deploy_all, deploy_bot_nft_with_registry, register_user};
 use automint_token::AMTTokenClient;
@@ -2146,7 +2150,7 @@ fn test_tier_stats_follow_a_scripted_sequence_of_sales() {
     let buyer = Address::generate(&h.env);
     h.token.mint(&buyer, &1000_0000000_i128);
 
-    let stats = h.mkt.tier_stats(&BotTier::Basic);
+    let stats = h.mkt.tier_stats(&MktBotTier::Basic);
     assert_eq!(stats.volume, 0);
     assert_eq!(stats.sale_count, 0);
     assert_eq!(stats.floor_price, 0);
@@ -2170,13 +2174,13 @@ fn test_tier_stats_follow_a_scripted_sequence_of_sales() {
 
     // The floor is the cheapest active listing.
     assert_eq!(
-        h.mkt.tier_stats(&BotTier::Basic).floor_price,
+        h.mkt.tier_stats(&MktBotTier::Basic).floor_price,
         40_0000000_i128
     );
 
     // Buying the cheapest moves the floor to the next one.
     h.mkt.buy_bot(&buyer, &cheap);
-    let stats = h.mkt.tier_stats(&BotTier::Basic);
+    let stats = h.mkt.tier_stats(&MktBotTier::Basic);
     assert_eq!(stats.volume, 40_0000000_i128);
     assert_eq!(stats.sale_count, 1);
     assert_eq!(stats.last_sale_price, 40_0000000_i128);
@@ -2184,14 +2188,14 @@ fn test_tier_stats_follow_a_scripted_sequence_of_sales() {
 
     // Buying the last listing leaves no floor.
     h.mkt.buy_bot(&buyer, &dear);
-    let stats = h.mkt.tier_stats(&BotTier::Basic);
+    let stats = h.mkt.tier_stats(&MktBotTier::Basic);
     assert_eq!(stats.volume, 100_0000000_i128);
     assert_eq!(stats.sale_count, 2);
     assert_eq!(stats.last_sale_price, 60_0000000_i128);
     assert_eq!(stats.floor_price, 0);
 
     // Other tiers are untouched, and market_stats reports every tier.
-    assert_eq!(h.mkt.tier_stats(&BotTier::Gold).sale_count, 0);
+    assert_eq!(h.mkt.tier_stats(&MktBotTier::Gold).sale_count, 0);
     assert_eq!(h.mkt.market_stats().len(), 5);
 }
 
@@ -2219,21 +2223,21 @@ fn test_floor_updates_when_the_cheapest_listing_is_cancelled_or_repriced() {
     // Repricing the cheapest above the other moves the floor.
     h.mkt.update_price(&seller, &cheap, &80_0000000_i128);
     assert_eq!(
-        h.mkt.tier_stats(&BotTier::Basic).floor_price,
+        h.mkt.tier_stats(&MktBotTier::Basic).floor_price,
         60_0000000_i128
     );
 
     // Repricing below the floor lowers it.
     h.mkt.update_price(&seller, &dear, &50_0000000_i128);
     assert_eq!(
-        h.mkt.tier_stats(&BotTier::Basic).floor_price,
+        h.mkt.tier_stats(&MktBotTier::Basic).floor_price,
         50_0000000_i128
     );
 
     // Cancelling the floor listing falls back to the remaining one.
     h.mkt.cancel_listing(&seller, &dear);
     assert_eq!(
-        h.mkt.tier_stats(&BotTier::Basic).floor_price,
+        h.mkt.tier_stats(&MktBotTier::Basic).floor_price,
         80_0000000_i128
     );
 }
@@ -2804,7 +2808,7 @@ mod offers_and_fees {
         assert_eq!(offer.status, OfferStatus::Accepted);
         assert_eq!(h.mkt.get_offers_for_bot(&bot_id).len(), 0);
         assert_eq!(h.mkt.get_user_purchases(&buyer, &10).len(), 1);
-        assert_eq!(h.mkt.tier_stats(&BotTier::Basic).sale_count, 1);
+        assert_eq!(h.mkt.tier_stats(&MktBotTier::Basic).sale_count, 1);
         assert_eq!(last_event_topic(&h), symbol_short!("offer_acc"));
     }
 
@@ -3153,9 +3157,9 @@ mod offers_and_fees {
         let (seller, buyer, bot_id, offer_id) = offer_setup(&h);
         h.env.as_contract(&h.mkt.address, || {
             h.env.storage().persistent().set(
-                &DataKey::TierStats(BotTier::Basic),
+                &DataKey::TierStats(MktBotTier::Basic),
                 &TierStats {
-                    tier: BotTier::Basic,
+                    tier: MktBotTier::Basic,
                     volume: 0,
                     sale_count: u64::MAX,
                     last_sale_price: 0,

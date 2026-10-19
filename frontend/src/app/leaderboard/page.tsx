@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import clsx from "clsx";
 import { toast } from "sonner";
 import { Trophy } from "lucide-react";
-import { useLeaderboard, useRank } from "@/hooks/useLeaderboard";
+import { useLeaderboard, useRank, useSeason } from "@/hooks/useLeaderboard";
 import { useLeaderboardAccruals } from "@/hooks/useLeaderboardAccruals";
 import { useProfiles } from "@/hooks/useProfiles";
 import { useWalletStore, selectPublicKey } from "@/store/walletStore";
@@ -19,8 +20,28 @@ const LeaderboardTable = dynamic(
 );
 
 export default function LeaderboardPage() {
-  const { data: leaderboardData, isLoading, isError, error, refetch, isRefetching } = useLeaderboard();
-  const rowAddresses = (leaderboardData ?? []).map((user) => user.address);
+  // #371 — "All-time" vs the current season board. `null` = all-time.
+  const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
+  const { data: season } = useSeason();
+  const seasonAvailable = typeof season === "number" && season > 0;
+  const activeSeason =
+    selectedSeason !== null && seasonAvailable ? selectedSeason : undefined;
+  const seasonView = activeSeason !== undefined;
+
+  const {
+    data: leaderboardData,
+    isLoading,
+    isError,
+    error,
+    refetch,
+    isRefetching,
+  } = useLeaderboard(undefined, activeSeason);
+  // Season rows carry their own display names; the all-time overlays
+  // (lifetime accruals, batch profiles, personal pin) stay all-time only —
+  // an empty address list keeps both batch queries disabled in season view.
+  const rowAddresses = seasonView
+    ? []
+    : (leaderboardData ?? []).map((user) => user.address);
   // One accrual call per poll for every visible row (#420).
   const { data: accrualStates } = useLeaderboardAccruals(rowAddresses);
   // One batch profile call for all visible rows instead of per-row get_user lookups.
@@ -54,6 +75,45 @@ export default function LeaderboardPage() {
           <p className="text-sm text-muted">Top earners across the network</p>
         </div>
       </div>
+
+      {/* #371 — period toggle; hidden until the registry reports a season. */}
+      {seasonAvailable && (
+        <div
+          className="mb-6 flex gap-2"
+          data-testid="season-toggle"
+          role="group"
+          aria-label="Leaderboard period"
+        >
+          <button
+            type="button"
+            onClick={() => setSelectedSeason(null)}
+            aria-pressed={selectedSeason === null}
+            data-testid="toggle-all-time"
+            className={clsx(
+              "rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
+              selectedSeason === null
+                ? "border-gold/60 bg-gold/15 text-gold"
+                : "border-liner text-muted hover:text-text",
+            )}
+          >
+            All-time
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedSeason(season)}
+            aria-pressed={selectedSeason !== null}
+            data-testid="toggle-season"
+            className={clsx(
+              "rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
+              selectedSeason !== null
+                ? "border-gold/60 bg-gold/15 text-gold"
+                : "border-liner text-muted hover:text-text",
+            )}
+          >
+            Season {season}
+          </button>
+        </div>
+      )}
 
       {/* Loading state — skeleton rows matching the real table shape */}
       {isLoading && (
@@ -107,7 +167,7 @@ export default function LeaderboardPage() {
         <LeaderboardTable
           users={leaderboardData.map((user, index) => ({ ...user, rank: index + 1 }))}
           currentAddress={publicKey}
-          currentUserRank={currentUserRank ?? null}
+          currentUserRank={seasonView ? null : currentUserRank ?? null}
           accrualStates={accrualStates}
           profiles={profiles}
         />

@@ -294,7 +294,7 @@ verify_contract() {  # <name>
 # accrual contract; --force re-wires.
 wire_token_admin() {
   if $DRY_RUN; then
-    log "[dry-run] would set token admin -> accrual"
+    log "[dry-run] would propose accrual as token admin and have accrual accept"
     return 0
   fi
 
@@ -321,6 +321,17 @@ wire_token_admin() {
     --source "$IDENTITY" \
     --network "$NETWORK" \
     -- set_admin --new_admin "$accrual_id"
+  stellar contract invoke \
+    --id "$accrual_id" \
+    --source "$IDENTITY" \
+    --network "$NETWORK" \
+    -- accept_token_admin
+
+  current="$(stellar contract invoke --id "$token_id" --source "$IDENTITY" --network "$NETWORK" -- admin)"
+  if [[ "$current" != "$accrual_id" ]]; then
+    echo "ERROR: token admin transfer was not accepted (expected $accrual_id, got $current)" >&2
+    exit 1
+  fi
   manifest_set token admin_wired_to "accrual"
   manifest_touch_meta
   log "Token admin wired to accrual."

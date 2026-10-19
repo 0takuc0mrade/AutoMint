@@ -50,6 +50,9 @@ import {
   isRegistered,
   getTotalUsers,
   getUserProfile,
+  getUserPoints,
+  getUserBotCount,
+  getUserClaimedAmt,
   getUsersBatch,
   MAX_USERS_BATCH,
   getAccrualState,
@@ -250,6 +253,29 @@ describe("getUserProfile", () => {
       new Error("Simulation failed for get_user: Error(Contract, #5)")
     );
     await expect(getUserProfile("GUSER")).rejects.toThrow("Error(Contract, #5)");
+  });
+});
+
+describe("scalar registry getters", () => {
+  it("reads scalar fields through their dedicated projection methods", async () => {
+    mockSimulate
+      .mockResolvedValueOnce(350n)
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(1200n);
+
+    await expect(getUserPoints("GUSER")).resolves.toBe(350n);
+    await expect(getUserBotCount("GUSER")).resolves.toBe(2);
+    await expect(getUserClaimedAmt("GUSER")).resolves.toBe(1200n);
+    expect(mockSimulate.mock.calls.map((call) => call[1])).toEqual([
+      "get_points",
+      "get_bot_count",
+      "get_claimed_amt",
+    ]);
+  });
+
+  it("propagates NotRegistered rather than converting a scalar read to a profile null", async () => {
+    mockSimulate.mockRejectedValue(new Error("NotRegistered"));
+    await expect(getUserPoints("GSTRANGER")).rejects.toThrow("NotRegistered");
   });
 });
 

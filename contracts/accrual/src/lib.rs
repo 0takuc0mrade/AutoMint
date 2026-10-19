@@ -35,6 +35,7 @@ pub trait TokenInterface {
     fn mint(env: Env, to: Address, amount: i128);
     fn decimals(env: Env) -> u32;
     fn accept_admin(env: Env);
+    fn set_mint_limit(env: Env, max_per_window: i128, window_ledgers: u32);
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,6 +125,7 @@ pub enum AccrualError {
     TooManyUsers = 10,
     NotRegistered = 11,
     Frozen = 12,
+    TokenConfigFailed = 13,
 }
 
 /// Error code carried by a failed cross-contract call: `0` on success, the
@@ -249,6 +251,41 @@ impl AccrualContract {
         }));
         env.authorize_as_current_contract(auth_entries);
         TokenClient::new(&env, &token).accept_admin();
+        Ok(())
+    }
+
+    /// Configures the token-level mint budget using the accrual admin's
+    /// authority. The accrual contract is the token admin in production.
+    pub fn set_mint_limit(
+        env: Env,
+        max_per_window: i128,
+        window_ledgers: u32,
+    ) -> Result<(), AccrualError> {
+        if max_per_window < 0 || (max_per_window > 0 && window_ledgers == 0) {
+            return Err(AccrualError::InvalidConfig);
+        }
+        require_admin(&env)?;
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(AccrualError::NotInitialized)?;
+        let mut auth_entries = Vec::new(&env);
+        auth_entries.push_back(InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: token.clone(),
+                fn_name: soroban_sdk::Symbol::new(&env, "set_mint_limit"),
+                args: (max_per_window, window_ledgers).into_val(&env),
+            },
+            sub_invocations: Vec::new(&env),
+        }));
+        env.authorize_as_current_contract(auth_entries);
+
+        let result = TokenClient::new(&env, &token)
+            .try_set_mint_limit(&max_per_window, &window_ledgers);
+        if result.is_err() || matches!(&result, Ok(Err(_))) {
+            return Err(AccrualError::TokenConfigFailed);
+        }
         Ok(())
     }
 
@@ -737,6 +774,7 @@ mod test {
     use super::*;
     use automint_bot_nft::{BotNFTContractClient, BotTier};
     use automint_testutils::{deploy_all, register_user};
+    use automint_token::{DataKey as TokenDataKey, MintLimit as TokenMintLimit};
     use soroban_sdk::{testutils::Address as _, testutils::Ledger, Env};
 
     /// One hour in seconds. A Basic bot accrues 1 point per hour, so tests
@@ -773,6 +811,29 @@ mod test {
             bot_nft,
             client,
         )
+    }
+
+    #[test]
+    fn admin_can_configure_the_token_mint_limit() {
+        let (env, _admin, _registry, token, client) = setup();
+        client.set_mint_limit(&1_000_i128, &100_u32);
+
+        let limit: TokenMintLimit = env.as_contract(&token, || {
+            env.storage()
+                .instance()
+                .get(&TokenDataKey::MintLimit)
+                .unwrap()
+        });
+        assert_eq!(limit.max_per_window, 1_000);
+        assert_eq!(limit.window_ledgers, 100);
+    }
+
+    #[test]
+    fn non_admin_cannot_configure_the_token_mint_limit() {
+        let (env, _admin, _registry, _token, client) = setup();
+        env.mock_auths(&[]);
+
+        assert!(client.try_set_mint_limit(&1_000_i128, &100_u32).is_err());
     }
 
     static NEXT_AUTO_NAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

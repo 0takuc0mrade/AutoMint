@@ -20,7 +20,7 @@
  */
 import Database from "better-sqlite3";
 import type { DailyRow, DecodedEvent, EventRow, Summary } from "./types.js";
-import { jsonStringify, toDecimal, toNum } from "./events.js";
+import { jsonStringify, toDecimal } from "./events.js";
 
 const LISTINGS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS listings (

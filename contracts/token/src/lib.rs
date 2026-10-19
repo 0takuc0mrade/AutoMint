@@ -1,6 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![no_std]
+//! #355: Storage tier policy. Allowances are temporary because they have a
+//! bounded authorization lifetime and should archive automatically after their
+//! ledger expiration. Balances and supply are persistent because token
+//! accounting must survive dormancy until explicitly archived; balance writes
+//! refresh their maximum TTL, and `bump_balance` lets keepers renew dormant
+//! holders. Contract configuration uses instance storage because it is small
+//! and every live instance operation shares its lifetime. Persistent entries
+//! can still archive after their TTL unless an active call extends them;
+//! temporary entries cannot be restored from an archive and read as absent.
+//!
+//! | `DataKey` | Tier | TTL policy |
+//! |---|---|---|
+//! | `Allowance` | Temporary | `approve` extends through `expiration_ledger`; temporary archival removes it independently of the allowance's logical expiration. |
+//! | `Balance` | Persistent | Writes and `bump_balance` refresh to the 180-day maximum TTL; dormant entries may archive. |
+//! | `State` | Instance | Initialized with the instance maximum TTL; state-changing token calls refresh the instance TTL. |
+//! | `Admin` | Instance | Shares the instance TTL and is refreshed on initialization/admin changes. |
+//! | `TotalSupply` | Persistent | Mint and burn refresh to the 180-day maximum TTL; dormant supply entries may archive. |
+//! | `MaxSupply` | Persistent | Set or removed by the admin; no separate entry TTL refresh is currently applied. |
+//! | `Locked` | Persistent | Reserved-balance key; no writer currently exists, and future writes must define a TTL refresh policy. |
+//!
+//! An allowance remains valid at `expiration_ledger` itself (inclusive), but
+//! its temporary entry can become unreadable earlier if that entry is archived.
+//! The `approve` TTL extension normally aligns archival with the expiration
+//! ledger; the distinction matters for storage lifecycle and is tested below.
+//!
 //! #347: Event topic/data layout, matching the Stellar Asset Contract
 //! (SAC) convention `topics = (name, ...indexed args)`, `data = payload`,
 //! so that indexers, block explorers and wallets (e.g. Freighter's
@@ -10,6 +35,7 @@
 //! | Function     | Topics                          | Data                  |
 //! |---------------|----------------------------------|------------------------|
 //! | `transfer`    | `("transfer", from, to)`         | `amount: i128`         |
+//! | `transfer_batch` | one `transfer` event per recipient | each `amount: i128` |
 //! | `mint`        | `("mint", admin, to)`             | `amount: i128`         |
 //! | `burn`        | `("burn", from)`                  | `amount: i128`         |
 //! | `approve`     | `("approve", from, spender)`     | `(amount: i128, expiration_ledger: u32)` |
@@ -68,7 +94,12 @@ pub enum TokenError {
     SupplyCapExceeded = 9,  // #339
     InvalidDecimals = 10,   // referenced in tests
     InvalidExpiration = 11, // #346
+    LengthMismatch = 12,
+    BatchTooLarge = 13,
 }
+
+/// Maximum recipients accepted by [`AMTToken::transfer_batch`].
+pub const MAX_BATCH_SIZE: u32 = 100;
 
 // TTL threshold is shared via automint-common (#337); the bump amount is
 // overridden below (#345).
@@ -226,6 +257,119 @@ impl AMTToken {
         }
 
         Self::do_transfer(&env, &from, &to, amount)
+    }
+
+    pub fn transfer_batch(
+        env: Env,
+        from: Address,
+        recipients: soroban_sdk::Vec<Address>,
+        amounts: soroban_sdk::Vec<i128>,
+    ) -> Result<(), TokenError> {
+        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?;
+        from.require_auth();
+
+        if recipients.len() != amounts.len() {
+            return Err(TokenError::LengthMismatch);
+        }
+        if recipients.len() > MAX_BATCH_SIZE {
+            return Err(TokenError::BatchTooLarge);
+        }
+
+        let mut total = 0_i128;
+        let mut credits: soroban_sdk::Vec<(Address, i128)> = soroban_sdk::Vec::new(&env);
+        for index in 0..recipients.len() {
+            let recipient = recipients.get(index).unwrap();
+            let amount = amounts.get(index).unwrap();
+            if amount < 0 {
+                return Err(TokenError::NegativeAmount);
+            }
+            total = total.checked_add(amount).ok_or(TokenError::Overflow)?;
+
+            let mut found = false;
+            for credit_index in 0..credits.len() {
+                let (address, credit) = credits.get(credit_index).unwrap();
+                if address == recipient {
+                    credits.set(
+                        credit_index,
+                        (address, credit.checked_add(amount).ok_or(TokenError::Overflow)?),
+                    );
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                credits.push_back((recipient, amount));
+            }
+        }
+
+        let source_balance = Self::balance(env.clone(), from.clone());
+        if source_balance < total {
+            return Err(TokenError::InsufficientBalance);
+        }
+        let debited_source = source_balance
+            .checked_sub(total)
+            .ok_or(TokenError::Overflow)?;
+
+        for index in 0..credits.len() {
+            let (recipient, amount) = credits.get(index).unwrap();
+            let starting_balance = if recipient == from {
+                debited_source
+            } else {
+                Self::balance(env.clone(), recipient.clone())
+            };
+            starting_balance
+                .checked_add(amount)
+                .ok_or(TokenError::Overflow)?;
+        }
+
+        if total > 0 {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Balance(from.clone()), &debited_source);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Balance(from.clone()),
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP,
+            );
+        }
+        for index in 0..credits.len() {
+            let (recipient, amount) = credits.get(index).unwrap();
+            if amount == 0 {
+                continue;
+            }
+            let starting_balance = if recipient == from {
+                debited_source
+            } else {
+                Self::balance(env.clone(), recipient.clone())
+            };
+            let new_balance = starting_balance
+                .checked_add(amount)
+                .ok_or(TokenError::Overflow)?;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Balance(recipient.clone()), &new_balance);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Balance(recipient.clone()),
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP,
+            );
+        }
+        if total > 0 {
+            env.storage()
+                .instance()
+                .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
+        for index in 0..recipients.len() {
+            env.events().publish(
+                (
+                    symbol_short!("transfer"),
+                    from.clone(),
+                    recipients.get(index).unwrap(),
+                ),
+                amounts.get(index).unwrap(),
+            );
+        }
+        Ok(())
     }
 
     pub fn transfer_from(
@@ -687,6 +831,7 @@ extern crate std;
 #[cfg(test)]
 mod test {
     use super::*;
+    use proptest::prelude::*;
     use soroban_sdk::{
         testutils::{Address as _, Events, Ledger as _},
         Env, String, Symbol, TryFromVal,
@@ -820,6 +965,96 @@ mod test {
         client.transfer(&alice, &bob, &200_i128);
         assert_eq!(client.balance(&alice), 300_i128);
         assert_eq!(client.balance(&bob), 200_i128);
+    }
+
+    #[test]
+    fn test_transfer_batch_moves_all_entries_and_emits_per_recipient() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let carol = Address::generate(&env);
+        client.mint(&alice, &1000_i128);
+        let before_events = env.events().all().len();
+
+        let recipients = soroban_sdk::vec![&env, bob.clone(), carol.clone(), bob.clone()];
+        let amounts = soroban_sdk::vec![&env, 100_i128, 150_i128, 50_i128];
+        client.transfer_batch(&alice, &recipients, &amounts);
+
+        assert_eq!(client.balance(&alice), 700);
+        assert_eq!(client.balance(&bob), 150);
+        assert_eq!(client.balance(&carol), 150);
+        assert_eq!(env.events().all().len(), before_events + 3);
+    }
+
+    #[test]
+    fn test_transfer_batch_rejects_mismatched_lengths_without_mutation() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        client.mint(&alice, &100_i128);
+
+        let recipients = soroban_sdk::vec![&env, bob.clone()];
+        let amounts = soroban_sdk::Vec::<i128>::new(&env);
+        assert_eq!(
+            client.try_transfer_batch(&alice, &recipients, &amounts),
+            Err(Ok(TokenError::LengthMismatch))
+        );
+        assert_eq!(client.balance(&alice), 100);
+        assert_eq!(client.balance(&bob), 0);
+    }
+
+    #[test]
+    fn test_transfer_batch_requires_full_solvency_before_writes() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let carol = Address::generate(&env);
+        client.mint(&alice, &100_i128);
+
+        let recipients = soroban_sdk::vec![&env, bob.clone(), carol.clone()];
+        let amounts = soroban_sdk::vec![&env, 60_i128, 50_i128];
+        assert_eq!(
+            client.try_transfer_batch(&alice, &recipients, &amounts),
+            Err(Ok(TokenError::InsufficientBalance))
+        );
+        assert_eq!(client.balance(&alice), 100);
+        assert_eq!(client.balance(&bob), 0);
+        assert_eq!(client.balance(&carol), 0);
+    }
+
+    #[test]
+    fn test_transfer_batch_rejects_total_overflow_without_mutation() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        client.mint(&alice, &100_i128);
+
+        let recipients = soroban_sdk::vec![&env, bob.clone(), bob.clone()];
+        let amounts = soroban_sdk::vec![&env, i128::MAX, 1_i128];
+        assert_eq!(
+            client.try_transfer_batch(&alice, &recipients, &amounts),
+            Err(Ok(TokenError::Overflow))
+        );
+        assert_eq!(client.balance(&alice), 100);
+        assert_eq!(client.balance(&bob), 0);
+    }
+
+    #[test]
+    fn test_transfer_batch_rejects_more_than_one_hundred_entries() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let mut recipients = soroban_sdk::Vec::new(&env);
+        let mut amounts = soroban_sdk::Vec::new(&env);
+        for _ in 0..=MAX_BATCH_SIZE {
+            recipients.push_back(bob.clone());
+            amounts.push_back(0_i128);
+        }
+
+        assert_eq!(
+            client.try_transfer_batch(&alice, &recipients, &amounts),
+            Err(Ok(TokenError::BatchTooLarge))
+        );
     }
 
     #[test]
@@ -1439,6 +1674,32 @@ mod test {
         client.approve(&alice, &spender, &250_i128, &current);
         // Ledger has not advanced past expiration_ledger yet — still valid
         assert_eq!(client.allowance(&alice, &spender), 250_i128);
+    }
+
+    #[test]
+    fn test_allowance_unreadable_after_temporary_entry_is_archived() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let current = env.ledger().sequence();
+        let expiration_ledger = current + 100;
+        env.ledger().set_min_temp_entry_ttl(1);
+        let key = DataKey::Allowance(AllowanceKey {
+            from: alice.clone(),
+            spender: spender.clone(),
+        });
+        env.storage().temporary().set(
+            &key,
+            &AllowanceValue {
+                amount: 250,
+                expiration_ledger,
+            },
+        );
+        assert_eq!(client.allowance(&alice, &spender), 250_i128);
+
+        env.ledger().set_sequence_number(current + 2);
+        assert!(env.ledger().sequence() < expiration_ledger);
+        assert_eq!(client.allowance(&alice, &spender), 0_i128);
     }
 
     #[test]
@@ -2089,6 +2350,122 @@ mod test {
         assert_eq!(t0, symbol_short!("set_admin"));
         assert_eq!(t1, admin);
         assert_eq!(Address::try_from_val(&env, &data).unwrap(), new_admin);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_supply_is_conserved_after_arbitrary_operations(
+            actions in prop::collection::vec((0_u8..3, 0_u8..3, 1_i128..100), 0..80)
+        ) {
+            let (env, _admin, client) = setup();
+            let users = [
+                Address::generate(&env),
+                Address::generate(&env),
+                Address::generate(&env),
+            ];
+
+            for (operation, from_index, amount) in actions {
+                let source_index = from_index as usize;
+                let target_index = (source_index + 1) % users.len();
+                match operation {
+                    0 => client.mint(&users[source_index], &amount),
+                    1 => {
+                        let _ = client.try_transfer(
+                            &users[source_index],
+                            &users[target_index],
+                            &amount,
+                        );
+                    }
+                    _ => {
+                        let _ = client.try_burn(&users[source_index], &amount);
+                    }
+                }
+
+                let sum: i128 = users.iter().map(|user| client.balance(user)).sum();
+                prop_assert_eq!(sum, client.total_supply());
+            }
+        }
+
+        #[test]
+        fn prop_balances_never_become_negative(
+            actions in prop::collection::vec((0_u8..3, 0_u8..3, 1_i128..200), 0..80)
+        ) {
+            let (env, _admin, client) = setup();
+            let users = [
+                Address::generate(&env),
+                Address::generate(&env),
+                Address::generate(&env),
+            ];
+
+            for (operation, source, amount) in actions {
+                let source_index = source as usize;
+                let target_index = (source_index + 1) % users.len();
+                match operation {
+                    0 => client.mint(&users[source_index], &amount),
+                    1 => {
+                        let _ = client.try_transfer(
+                            &users[source_index],
+                            &users[target_index],
+                            &amount,
+                        );
+                    }
+                    _ => {
+                        let _ = client.try_burn(&users[source_index], &amount);
+                    }
+                }
+                for user in &users {
+                    prop_assert!(client.balance(user) >= 0);
+                }
+            }
+        }
+
+        #[test]
+        fn prop_transfer_from_never_increases_allowance(
+            amounts in prop::collection::vec(1_i128..100, 0..80)
+        ) {
+            let (env, _admin, client) = setup();
+            let owner = Address::generate(&env);
+            let spender = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            client.mint(&owner, &10_000_i128);
+            client.approve(
+                &owner,
+                &spender,
+                &10_000_i128,
+                &(env.ledger().sequence() + 10_000),
+            );
+            let mut previous = client.allowance(&owner, &spender);
+
+            for amount in amounts {
+                let _ = client.try_transfer_from(&spender, &owner, &recipient, &amount);
+                let current = client.allowance(&owner, &spender);
+                prop_assert!(current <= previous);
+                prop_assert!(current >= 0);
+                previous = current;
+            }
+        }
+
+        #[test]
+        fn prop_transfer_then_reverse_restores_both_balances(
+            alice_start in 1_i128..10_000,
+            bob_start in 0_i128..10_000,
+            amount in 0_i128..10_000
+        ) {
+            let (env, _admin, client) = setup();
+            let alice = Address::generate(&env);
+            let bob = Address::generate(&env);
+            let transfer_amount = amount.min(alice_start);
+            client.mint(&alice, &alice_start);
+            client.mint(&bob, &bob_start);
+            let alice_before = client.balance(&alice);
+            let bob_before = client.balance(&bob);
+
+            client.transfer(&alice, &bob, &transfer_amount);
+            client.transfer(&bob, &alice, &transfer_amount);
+
+            prop_assert_eq!(client.balance(&alice), alice_before);
+            prop_assert_eq!(client.balance(&bob), bob_before);
+        }
     }
 }
 

@@ -11,6 +11,9 @@ use soroban_sdk::{
 pub enum DataKey {
     // Per-user storage
     UserProfile(Address),
+    UserPoints(Address),
+    UserBotCount(Address),
+    UserClaimedAmt(Address),
     Username(String),
     // Global storage
     /// Bounded leaderboard (#332): `Vec<(Address, u64)>` of at most
@@ -151,22 +154,12 @@ impl RegistryContract {
             bot_count: 0,
         };
 
-        // Store user profile
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserProfile(user.clone()), &profile);
+        Self::persist_profile(&env, &user, &profile);
 
         // Store username mapping
         env.storage()
             .persistent()
             .set(&DataKey::Username(username), &user);
-
-        // Extend TTL for user profile
-        env.storage().persistent().extend_ttl(
-            &DataKey::UserProfile(user.clone()),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
 
         // While the leaderboard has room, a new (0-point) user joins at the
         // end so small deployments still list every registered user in
@@ -211,6 +204,69 @@ impl RegistryContract {
             .persistent()
             .get(&DataKey::UserProfile(user))
             .ok_or(RegistryError::NotRegistered)
+    }
+
+    pub fn get_points(env: Env, user: Address) -> Result<u64, RegistryError> {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::UserProfile(user.clone()))
+        {
+            return Err(RegistryError::NotRegistered);
+        }
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserPoints(user.clone()))
+            .unwrap_or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get::<_, UserProfile>(&DataKey::UserProfile(user))
+                    .unwrap()
+                    .total_points
+            }))
+    }
+
+    pub fn get_bot_count(env: Env, user: Address) -> Result<u32, RegistryError> {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::UserProfile(user.clone()))
+        {
+            return Err(RegistryError::NotRegistered);
+        }
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserBotCount(user.clone()))
+            .unwrap_or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get::<_, UserProfile>(&DataKey::UserProfile(user))
+                    .unwrap()
+                    .bot_count
+            }))
+    }
+
+    pub fn get_claimed_amt(env: Env, user: Address) -> Result<i128, RegistryError> {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::UserProfile(user.clone()))
+        {
+            return Err(RegistryError::NotRegistered);
+        }
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserClaimedAmt(user.clone()))
+            .unwrap_or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get::<_, UserProfile>(&DataKey::UserProfile(user))
+                    .unwrap()
+                    .claimed_amt
+            }))
     }
 
     /// Fetch profiles for up to `MAX_USERS_BATCH` addresses in a single call,
@@ -294,14 +350,7 @@ impl RegistryContract {
             return Ok(());
         }
         profile.total_points = profile.total_points.saturating_add(points);
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserProfile(user.clone()), &profile);
-        env.storage().persistent().extend_ttl(
-            &DataKey::UserProfile(user.clone()),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
+        Self::persist_profile(&env, &user, &profile);
         Self::update_top(&env, &user, profile.total_points);
         env.events()
             .publish((symbol_short!("addpoints"), user), points);
@@ -320,14 +369,7 @@ impl RegistryContract {
             .get(&DataKey::UserProfile(user.clone()))
             .ok_or(RegistryError::NotRegistered)?;
         profile.bot_count = profile.bot_count.saturating_add(1);
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserProfile(user.clone()), &profile);
-        env.storage().persistent().extend_ttl(
-            &DataKey::UserProfile(user.clone()),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
+        Self::persist_profile(&env, &user, &profile);
         Ok(())
     }
 
@@ -340,15 +382,8 @@ impl RegistryContract {
             .ok_or(RegistryError::NotRegistered)?;
         // Floor at zero — bot_count is a u32, saturating_sub prevents underflow
         profile.bot_count = profile.bot_count.saturating_sub(1);
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserProfile(user.clone()), &profile);
+        Self::persist_profile(&env, &user, &profile);
         // Extend TTL so the profile doesn't expire around active bot operations
-        env.storage().persistent().extend_ttl(
-            &DataKey::UserProfile(user.clone()),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
         env.events()
             .publish((symbol_short!("dec_bot"), user), profile.bot_count);
         Ok(())
@@ -376,14 +411,7 @@ impl RegistryContract {
             return Ok(());
         }
         profile.claimed_amt = profile.claimed_amt.saturating_add(amount);
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserProfile(user.clone()), &profile);
-        env.storage().persistent().extend_ttl(
-            &DataKey::UserProfile(user.clone()),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
+        Self::persist_profile(&env, &user, &profile);
         Ok(())
     }
 
@@ -599,6 +627,22 @@ impl RegistryContract {
     /// currently pending.
     pub fn pending_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    fn persist_profile(env: &Env, user: &Address, profile: &UserProfile) {
+        let persistent = env.storage().persistent();
+        let profile_key = DataKey::UserProfile(user.clone());
+        let points_key = DataKey::UserPoints(user.clone());
+        let bot_count_key = DataKey::UserBotCount(user.clone());
+        let claimed_amt_key = DataKey::UserClaimedAmt(user.clone());
+        persistent.set(&profile_key, profile);
+        persistent.set(&points_key, &profile.total_points);
+        persistent.set(&bot_count_key, &profile.bot_count);
+        persistent.set(&claimed_amt_key, &profile.claimed_amt);
+        persistent.extend_ttl(&profile_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        persistent.extend_ttl(&points_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        persistent.extend_ttl(&bot_count_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        persistent.extend_ttl(&claimed_amt_key, LEDGER_THRESHOLD, LEDGER_BUMP);
     }
 }
 
@@ -1060,6 +1104,43 @@ mod test {
         assert_eq!(profile.total_points, 42);
         assert_eq!(profile.claimed_amt, 100);
         assert_eq!(profile.bot_count, 1);
+    }
+
+    #[test]
+    fn test_scalar_getters_match_profile_fields() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "Projection"));
+        client.add_points(&user, &42_u64);
+        client.add_claimed_amt(&user, &100_i128);
+        client.increment_bot_count(&user);
+
+        let profile = client.get_user(&user);
+        assert_eq!(client.get_points(&user), profile.total_points);
+        assert_eq!(client.get_bot_count(&user), profile.bot_count);
+        assert_eq!(client.get_claimed_amt(&user), profile.claimed_amt);
+
+        client.decrement_bot_count(&user);
+        assert_eq!(client.get_bot_count(&user), client.get_user(&user).bot_count);
+    }
+
+    #[test]
+    fn test_scalar_getters_return_not_registered_for_unknown_user() {
+        let (env, _admin, client) = setup();
+        let ghost = Address::generate(&env);
+
+        assert!(matches!(
+            client.try_get_points(&ghost),
+            Err(Ok(RegistryError::NotRegistered))
+        ));
+        assert!(matches!(
+            client.try_get_bot_count(&ghost),
+            Err(Ok(RegistryError::NotRegistered))
+        ));
+        assert!(matches!(
+            client.try_get_claimed_amt(&ghost),
+            Err(Ok(RegistryError::NotRegistered))
+        ));
     }
 
     #[test]

@@ -95,6 +95,10 @@ jest.mock("@/hooks/useAccrual", () => ({
     data: mockHooks.profile,
     isLoading: mockHooks.profileLoading,
   }),
+  useProfilePoints: () => ({
+    data: mockHooks.profile?.points,
+    isLoading: mockHooks.profileLoading,
+  }),
   useBots: () => ({
     data: mockHooks.bots,
     isLoading: mockHooks.botsLoading,

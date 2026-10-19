@@ -4,6 +4,7 @@ import {
   getAccrualState,
   getAccrualConfig,
   getUserProfile,
+  getUserPoints,
   isRegistered,
   getUserBots,
   getAmtBalance,
@@ -201,6 +202,7 @@ export function useRegister() {
       queryClient.invalidateQueries({ queryKey: qk.bots(publicKey) });
       queryClient.invalidateQueries({ queryKey: ["botDetails"] });
       queryClient.invalidateQueries({ queryKey: qk.profile(publicKey) });
+      queryClient.invalidateQueries({ queryKey: qk.profilePoints(publicKey) });
       queryClient.invalidateQueries({ queryKey: qk.dashboard(publicKey) });
       toast.success("Registration complete! Welcome to AutoMint!");
     },
@@ -242,6 +244,21 @@ export function useProfile() {
     enabled: !!publicKey,
     refetchInterval: pollWhenVisible(),
     staleTime: STALE_TIME.STANDARD,
+    gcTime: GC_TIME.STANDARD,
+  });
+}
+
+/** Lightweight points projection for dashboard and counter polling. */
+export function useProfilePoints() {
+  const publicKey = useWalletStore(selectPublicKey);
+
+  return useQuery<bigint>({
+    queryKey: qk.profilePoints(publicKey),
+    queryFn: () =>
+      publicKey ? getUserPoints(publicKey) : Promise.resolve(BigInt(0)),
+    enabled: !!publicKey,
+    refetchInterval: pollWhenVisible(),
+    staleTime: STALE_TIME.REALTIME,
     gcTime: GC_TIME.STANDARD,
   });
 }
@@ -341,7 +358,7 @@ export function useUserTotalRate() {
 
 export interface DashboardData {
   registered: boolean;
-  profile: UserProfile | null;
+  profilePoints: bigint | null;
   bots: bigint[];
   accrualState: AccrualState | null;
   amtBalance: bigint;
@@ -366,20 +383,20 @@ export function useDashboardData() {
       if (!publicKey) {
         return {
           registered: false,
-          profile: null,
+          profilePoints: null,
           bots: [],
           accrualState: null,
           amtBalance: BigInt(0),
         };
       }
-      const [registered, profile, bots, accrualState, amtBalance] = await Promise.all([
+      const [registered, profilePoints, bots, accrualState, amtBalance] = await Promise.all([
         isRegistered(publicKey),
-        getUserProfile(publicKey),
+        getUserPoints(publicKey),
         getUserBots(publicKey),
         getAccrualState(publicKey),
         getAmtBalance(publicKey),
       ]);
-      return { registered, profile, bots, accrualState, amtBalance };
+      return { registered, profilePoints, bots, accrualState, amtBalance };
     },
     enabled: !!publicKey,
     refetchInterval: pollWhenVisible(),
@@ -497,6 +514,7 @@ export function useClaim() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: qk.profile(publicKey) });
+      queryClient.invalidateQueries({ queryKey: qk.profilePoints(publicKey) });
       queryClient.invalidateQueries({ queryKey: qk.accrualState(publicKey) });
       queryClient.invalidateQueries({ queryKey: qk.amtBalance(publicKey) });
       queryClient.invalidateQueries({ queryKey: ["leaderboard"] });
@@ -590,7 +608,7 @@ export function useAnimatedPoints(): AnimatedPoints {
   const [pending, setPending] = useState<bigint>(BigInt(0));
 
   const { data: accrualState } = useAccrualState();
-  const { data: profile } = useProfile();
+  const { data: profilePoints } = useProfilePoints();
   const { data: accrualConfig } = useAccrualConfig();
   // The rate rides along on the accrual state itself (#418), so the
   // interpolation matches the contract's own view in a single call — no
@@ -626,7 +644,7 @@ export function useAnimatedPoints(): AnimatedPoints {
 
   // The headline total uses lifetime_points if available (falling back to profile?.points).
   // progressToNext uses carry_points.
-  const lifetime = accrualState?.lifetime_points ?? profile?.points ?? BigInt(0);
+  const lifetime = accrualState?.lifetime_points ?? profilePoints ?? BigInt(0);
   const progressToNext = accrualState?.carry_points ?? BigInt(0);
   const pointsPerAmt = accrualConfig?.pointsPerAmt;
   const progressToNextRatio =

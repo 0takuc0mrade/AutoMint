@@ -45,6 +45,7 @@ function evictAddressCache(queryClient: ReturnType<typeof useQueryClient>, addre
   const addressScoped: Array<ReturnType<typeof qk[keyof typeof qk]>> = [
     qk.registered(address),
     qk.profile(address),
+    qk.profilePoints(address),
     qk.bots(address),
     qk.accrualState(address),
     qk.amtBalance(address),

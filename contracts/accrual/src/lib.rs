@@ -124,6 +124,7 @@ pub enum AccrualError {
     TooManyUsers = 10,
     NotRegistered = 11,
     Frozen = 12,
+    BotNftCallFailed = 13,
 }
 
 /// Error code carried by a failed cross-contract call: `0` on success, the
@@ -216,11 +217,16 @@ impl AccrualContract {
         env.storage().instance().set(&DataKey::Initialized, &true);
         let mut args = Vec::new(&env);
         args.push_back(env.current_contract_address().into_val(&env));
-        let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+        let wiring = env.try_invoke_contract::<(), soroban_sdk::Error>(
             &bot_nft,
             &soroban_sdk::Symbol::new(&env, "set_accrual"),
             args,
         );
+        if wiring.is_err() || matches!(&wiring, Ok(Err(_))) {
+            let code = invoke_err_code(&wiring);
+            env.events().publish((symbol_short!("fail_bot"),), code);
+            return Err(AccrualError::BotNftCallFailed);
+        }
 
         env.storage()
             .instance()
@@ -1116,6 +1122,28 @@ mod test {
     }
 
     #[test]
+    fn test_claim_carries_sub_hour_remainder_forward() {
+        let (env, _admin, registry, token, client) = setup();
+        let user = Address::generate(&env);
+        register_user(&env, &registry, &user, "leftover");
+        start_basic(&env, &client, &user);
+
+        env.ledger().with_mut(|l| l.timestamp += HOUR / 2);
+        assert_eq!(client.claim(&user, &token, &registry), 0);
+
+        let saved: UserAccrual = env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::UserAccrual(user.clone()))
+                .unwrap()
+        });
+        assert_eq!(saved.leftover, HOUR / 2);
+
+        env.ledger().with_mut(|l| l.timestamp += HOUR / 2);
+        assert_eq!(client.claim(&user, &token, &registry), 1);
+    }
+
+    #[test]
     fn test_claim_unregistered_user_fails() {
         let (env, _admin, _registry, _token, client) = setup();
         let user = Address::generate(&env);
@@ -1222,6 +1250,16 @@ mod test {
         let (_env, _admin, _registry, _token, client) = setup();
         let config = client.config();
         assert_eq!(config.points_per_amt, 100);
+        assert_eq!(config.amt_scale, 10_000_000);
+    }
+
+    #[test]
+    fn test_set_points_per_amt_preserves_amt_scale() {
+        let (_env, _admin, _registry, _token, client) = setup();
+        client.set_points_per_amt(&200);
+        let config = client.config();
+        assert_eq!(config.points_per_amt, 200);
+        assert_eq!(config.amt_scale, 10_000_000);
     }
 
     #[test]
@@ -1671,9 +1709,12 @@ mod auth_tests {
         let id = env.register_contract(None, AccrualContract);
         let client = AccrualContractClient::new(&env, &id);
         let admin = Address::generate(&env);
-        let bot_nft = Address::generate(&env);
+        let bot_nft = env.register_contract(None, automint_bot_nft::BotNFTContract);
+        let bot_nft_client = automint_bot_nft::BotNFTContractClient::new(&env, &bot_nft);
         let registry = Address::generate(&env);
         let token = Address::generate(&env);
+        env.mock_all_auths();
+        bot_nft_client.initialize(&admin, &registry, &token);
 
         env.mock_auths(&[MockAuth {
             address: &admin,
@@ -1688,11 +1729,31 @@ mod auth_tests {
                     100_u64,
                 )
                     .into_val(&env),
-                sub_invokes: &[],
+                sub_invokes: &[MockAuthInvoke {
+                    contract: &bot_nft,
+                    fn_name: "set_accrual",
+                    args: (id.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                }],
             },
         }]);
         let result = client.try_initialize(&admin, &bot_nft, &registry, &token, &100_u64);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_initialize_fails_when_bot_nft_wiring_fails() {
+        let env = Env::default();
+        let id = env.register_contract(None, AccrualContract);
+        let client = AccrualContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let bot_nft = env.register_contract(None, automint_bot_nft::BotNFTContract);
+        let registry = Address::generate(&env);
+        let token = Address::generate(&env);
+        env.mock_all_auths();
+
+        let result = client.try_initialize(&admin, &bot_nft, &registry, &token, &100_u64);
+        assert_eq!(result, Err(Ok(AccrualError::BotNftCallFailed)));
     }
 
     fn register(ctx: &Ctx, user: &Address) {

@@ -16,7 +16,7 @@ pub fn initialize(
 ) -> Result<(), AccrualError>
 ```
 
-Initialize the contract with an admin address, the bot_nft and registry addresses, and the points-to-AMT conversion rate. Requires authorization from `admin`. The registry address is stored so `start_accrual` can verify registration up front (#415).
+Initialize the contract with an admin address, the bot_nft and registry addresses, and the points-to-AMT conversion rate. Requires authorization from `admin`. The registry address is stored so `start_accrual` can verify registration up front (#415). Initialization also wires this contract into bot_nft via `set_accrual`; a failure aborts initialization with `BotNftCallFailed`.
 
 - `admin`: The contract administrator address.
 - `bot_nft`: The bot NFT contract used to derive each user's accrual rate.
@@ -26,6 +26,7 @@ Initialize the contract with an admin address, the bot_nft and registry addresse
 Errors:
 - `AlreadyInitialized`: The contract has already been initialized.
 - `InvalidConfig`: `points_per_amt` is `0`.
+- `BotNftCallFailed`: bot_nft rejected or could not complete the accrual wiring call.
 
 Example:
 

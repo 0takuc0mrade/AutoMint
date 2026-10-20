@@ -691,6 +691,48 @@ describe("getUserRank", () => {
     });
   });
 
+  it("recognizes Soroban's missing-contract-function error for older registries", async () => {
+    mockSimulate
+      .mockResolvedValueOnce(board)
+      .mockRejectedValueOnce(new Error("Simulation failed for get_rank: Error(Contract, #0)"))
+      .mockResolvedValueOnce({ address: "GD", username: "D", total_points: 42n });
+
+    await expect(getUserRank("GD", "GSRC")).resolves.toMatchObject({
+      rank: null,
+      points: 42n,
+    });
+  });
+
+  it("propagates unexpected get_rank simulation failures", async () => {
+    const rpcError = new Error("RPC unavailable");
+    mockSimulate
+      .mockResolvedValueOnce(board)
+      .mockRejectedValueOnce(rpcError)
+      .mockResolvedValueOnce({ address: "GD", username: "D", total_points: 42n });
+
+    await expect(getUserRank("GD", "GSRC")).rejects.toBe(rpcError);
+  });
+
+  it("propagates unexpected get_rank contract errors", async () => {
+    const contractError = new Error("Simulation failed for get_rank: Error(Contract, #5)");
+    mockSimulate
+      .mockResolvedValueOnce(board)
+      .mockRejectedValueOnce(contractError)
+      .mockResolvedValueOnce({ address: "GD", username: "D", total_points: 42n });
+
+    await expect(getUserRank("GD", "GSRC")).rejects.toBe(contractError);
+  });
+
+  it("propagates profile lookup failures after the missing-method fallback", async () => {
+    const rpcError = new Error("RPC unavailable");
+    mockSimulate
+      .mockResolvedValueOnce(board)
+      .mockRejectedValueOnce(new Error("unknown function get_rank"))
+      .mockRejectedValueOnce(rpcError);
+
+    await expect(getUserRank("GD", "GSRC")).rejects.toBe(rpcError);
+  });
+
   it("resolves to null when the address has no registry profile", async () => {
     mockSimulate
       .mockResolvedValueOnce(board)

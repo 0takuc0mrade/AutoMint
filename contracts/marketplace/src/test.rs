@@ -3178,4 +3178,127 @@ mod offers_and_fees {
         assert_eq!(h.token.balance(&h.mkt.address), PRICE);
         assert_eq!(h.mkt.get_offer(&offer_id).status, OfferStatus::Active);
     }
+
+    // ---- user history growth (#916) ----
+
+    #[test]
+    fn user_listing_history_is_paged_and_reads_back_in_order() {
+        let h = setup();
+        h.env.budget().reset_unlimited();
+        h.mkt.set_listing_cap(&200);
+        let seller = Address::generate(&h.env);
+        let total: u32 = 120;
+        let mut ids: std::vec::Vec<u64> = std::vec::Vec::new();
+        for i in 0..total {
+            let tier = TIERS[i as usize % TIERS.len()];
+            let bot_id = h.bot.admin_mint(&seller, &tier);
+            let listing_id = h.mkt.list_bot(
+                &seller,
+                &bot_id,
+                &(100_0000000_i128 + i as i128),
+                &h.token.address,
+                &604_800_u64,
+            );
+            ids.push(listing_id);
+        }
+
+        // 120 entries span three pages of at most USER_HISTORY_PAGE_SIZE each.
+        h.env.as_contract(&h.mkt.address, || {
+            assert_eq!(
+                MarketplaceContract::user_listing_count(&h.env, &seller),
+                total
+            );
+            for (page, expected) in [(0, 50), (1, 50), (2, 20)] {
+                let stored: Vec<u64> = h
+                    .env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::UserListingPage(seller.clone(), page))
+                    .unwrap();
+                assert_eq!(stored.len(), expected);
+            }
+        });
+
+        let all = h.mkt.get_user_listings(&seller);
+        assert_eq!(all.len(), total);
+        for (i, listing) in all.iter().enumerate() {
+            assert_eq!(listing.id, ids[i]);
+        }
+
+        // A cursor walk with a small page size visits each listing once.
+        let mut cursor: u32 = 0;
+        let mut seen: std::vec::Vec<u64> = std::vec::Vec::new();
+        loop {
+            let (page, next) = h.mkt.get_user_listings_page(&seller, &cursor, &30);
+            assert!(page.len() <= 30);
+            for listing in page.iter() {
+                seen.push(listing.id);
+            }
+            match next {
+                Some(n) => cursor = n,
+                None => break,
+            }
+        }
+        assert_eq!(seen, ids);
+
+        // Requests above the page cap are clamped to it.
+        let (capped, _) = h.mkt.get_user_listings_page(&seller, &0, &500);
+        assert_eq!(capped.len(), MAX_HISTORY_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn user_purchase_history_is_paged_and_reads_back_recent_first_window() {
+        let h = setup();
+        let buyer = Address::generate(&h.env);
+        let seller = Address::generate(&h.env);
+        let total: u32 = 120;
+        h.env.as_contract(&h.mkt.address, || {
+            for i in 0..total {
+                MarketplaceContract::add_user_purchase(
+                    &h.env,
+                    &buyer,
+                    Purchase {
+                        listing_id: i as u64 + 1,
+                        bot_id: i as u64 + 1,
+                        seller: seller.clone(),
+                        price: 100_0000000_i128,
+                        currency: h.token.address.clone(),
+                        purchased_at: i as u64,
+                    },
+                );
+            }
+            for (page, expected) in [(0, 50), (1, 50), (2, 20)] {
+                let stored: Vec<Purchase> = h
+                    .env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::UserPurchasePage(buyer.clone(), page))
+                    .unwrap();
+                assert_eq!(stored.len(), expected);
+            }
+        });
+
+        // The window read returns the most recent purchases, oldest first.
+        let recent = h.mkt.get_user_purchases(&buyer, &10);
+        assert_eq!(recent.len(), 10);
+        assert_eq!(recent.get(0).unwrap().listing_id, 111);
+        assert_eq!(recent.get(9).unwrap().listing_id, 120);
+        assert_eq!(h.mkt.get_user_purchases(&buyer, &500).len(), total);
+
+        // A cursor walk visits every purchase once, in order.
+        let mut cursor: u32 = 0;
+        let mut seen: std::vec::Vec<u64> = std::vec::Vec::new();
+        loop {
+            let (page, next) = h.mkt.get_user_purchases_page(&buyer, &cursor, &50);
+            for purchase in page.iter() {
+                seen.push(purchase.listing_id);
+            }
+            match next {
+                Some(n) => cursor = n,
+                None => break,
+            }
+        }
+        let expected: std::vec::Vec<u64> = (1..=total as u64).collect();
+        assert_eq!(seen, expected);
+    }
 }

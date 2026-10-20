@@ -192,8 +192,12 @@ pub enum DataKey {
     ListingPage(u32),
     /// Number of listing pages allocated (instance storage, a single u32).
     PageCount,
-    UserListings(Address),
-    UserPurchases(Address),
+    /// Page `n` of a seller's listing ids, `USER_HISTORY_PAGE_SIZE` per page (#916).
+    UserListingPage(Address, u32),
+    UserListingCount(Address),
+    /// Page `n` of a buyer's purchases, `USER_HISTORY_PAGE_SIZE` per page (#916).
+    UserPurchasePage(Address, u32),
+    UserPurchaseCount(Address),
     NextListingId,
     Config,
     Initialized,
@@ -358,6 +362,13 @@ const LEDGER_THRESHOLD: u32 = 103680;
 /// index so `get_offers_for_bot` and offer bookkeeping stay O(1) in storage
 /// entries.
 pub const MAX_OFFERS_PER_BOT: u32 = 25;
+
+/// Entries per persistent user-history page (#916). Appends rewrite only the
+/// last page, so a long history never gets loaded and stored in full.
+pub const USER_HISTORY_PAGE_SIZE: u32 = 50;
+
+/// Most history entries one paginated read returns (#916).
+pub const MAX_HISTORY_PAGE_LIMIT: u32 = 50;
 
 #[contract]
 pub struct MarketplaceContract;
@@ -612,15 +623,7 @@ impl MarketplaceContract {
         }
         Self::on_listing_added(&env, &listing);
 
-        let mut user_listings: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get::<_, Vec<u64>>(&DataKey::UserListings(seller.clone()))
-            .unwrap_or_else(|| Vec::new(&env));
-        user_listings.push_back(listing_id);
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserListings(seller.clone()), &user_listings);
+        Self::append_user_listing(&env, &seller, listing_id);
 
         let updated_count = match user_count.checked_add(1) {
             Some(n) => n,
@@ -729,31 +732,19 @@ impl MarketplaceContract {
             return Err(MarketplaceError::ListingStale);
         }
 
-        let platform_fee = match listing.price.checked_mul(config.fee_bps as i128) {
-            Some(p) => match p.checked_div(10_000) {
-                Some(f) => f,
-                None => {
-                    Self::clear_lock(&env);
-                    return Err(MarketplaceError::Overflow);
-                }
-            },
-            None => {
+        let platform_fee = match Self::bps_of(listing.price, config.fee_bps) {
+            Ok(f) => f,
+            Err(e) => {
                 Self::clear_lock(&env);
-                return Err(MarketplaceError::Overflow);
+                return Err(e);
             }
         };
 
-        let royalty = match listing.price.checked_mul(config.royalty_bps as i128) {
-            Some(p) => match p.checked_div(10_000) {
-                Some(r) => r,
-                None => {
-                    Self::clear_lock(&env);
-                    return Err(MarketplaceError::Overflow);
-                }
-            },
-            None => {
+        let royalty = match Self::bps_of(listing.price, config.royalty_bps) {
+            Ok(r) => r,
+            Err(e) => {
                 Self::clear_lock(&env);
-                return Err(MarketplaceError::Overflow);
+                return Err(e);
             }
         };
 
@@ -1302,41 +1293,53 @@ impl MarketplaceContract {
         }
         (result, next)
     }
+    /// Every listing the seller has created. Reads the whole history; use
+    /// `get_user_listings_page` for bounded reads (#916).
     pub fn get_user_listings(env: Env, seller: Address) -> Vec<Listing> {
-        let ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get::<_, Vec<u64>>(&DataKey::UserListings(seller))
-            .unwrap_or_else(|| Vec::new(&env));
-        let mut result: Vec<Listing> = Vec::new(&env);
-        for id in ids.iter() {
-            if let Some(l) = env
-                .storage()
-                .persistent()
-                .get::<_, Listing>(&DataKey::Listing(id))
-            {
-                result.push_back(l);
-            }
-        }
-        result
+        let count = Self::user_listing_count(&env, &seller);
+        Self::read_user_listings(&env, &seller, 0, count)
     }
 
+    /// Up to `limit` (at most `MAX_HISTORY_PAGE_LIMIT`) of the seller's
+    /// listings, oldest first, starting at index `cursor`. The second value is
+    /// the cursor for the next page, or `None` once the history is exhausted.
+    pub fn get_user_listings_page(
+        env: Env,
+        seller: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<Listing>, Option<u32>) {
+        let count = Self::user_listing_count(&env, &seller);
+        let end = cursor
+            .saturating_add(limit.min(MAX_HISTORY_PAGE_LIMIT))
+            .min(count);
+        let listings = Self::read_user_listings(&env, &seller, cursor, end);
+        let next = if end < count { Some(end) } else { None };
+        (listings, next)
+    }
+
+    /// The buyer's most recent `limit` purchases, oldest first (#916).
     pub fn get_user_purchases(env: Env, buyer: Address, limit: u32) -> Vec<Purchase> {
-        let purchases: Vec<Purchase> = env
-            .storage()
-            .persistent()
-            .get::<_, Vec<Purchase>>(&DataKey::UserPurchases(buyer))
-            .unwrap_or_else(|| Vec::new(&env));
-        let mut result: Vec<Purchase> = Vec::new(&env);
-        let start = if purchases.len() > limit {
-            purchases.len() - limit
-        } else {
-            0
-        };
-        for i in start..purchases.len() {
-            result.push_back(purchases.get(i).unwrap().clone());
-        }
-        result
+        let count = Self::user_purchase_count(&env, &buyer);
+        Self::read_user_purchases(&env, &buyer, count.saturating_sub(limit), count)
+    }
+
+    /// Up to `limit` (at most `MAX_HISTORY_PAGE_LIMIT`) of the buyer's
+    /// purchases, oldest first, starting at index `cursor`. The second value is
+    /// the cursor for the next page, or `None` once the history is exhausted.
+    pub fn get_user_purchases_page(
+        env: Env,
+        buyer: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<Purchase>, Option<u32>) {
+        let count = Self::user_purchase_count(&env, &buyer);
+        let end = cursor
+            .saturating_add(limit.min(MAX_HISTORY_PAGE_LIMIT))
+            .min(count);
+        let purchases = Self::read_user_purchases(&env, &buyer, cursor, end);
+        let next = if end < count { Some(end) } else { None };
+        (purchases, next)
     }
 
     pub fn config(env: Env) -> Config {
@@ -1922,10 +1925,19 @@ impl MarketplaceContract {
     // ---- offer and fee helpers ----
 
     /// `amount * bps / 10_000`, or `Overflow`.
+    ///
+    /// Splits `amount` into whole and remainder parts of 10_000 so the
+    /// product never exceeds `i128` before the division. Prices above
+    /// `i128::MAX / 10_000` therefore settle correctly (#917).
     fn bps_of(amount: i128, bps: u32) -> Result<i128, MarketplaceError> {
-        amount
-            .checked_mul(bps as i128)
-            .and_then(|v| v.checked_div(10_000))
+        let bps = bps as i128;
+        let whole_fee = (amount / 10_000)
+            .checked_mul(bps)
+            .ok_or(MarketplaceError::Overflow)?;
+        // |remainder| < 10_000, so this product fits in i128 for any `bps`.
+        let remainder_fee = (amount % 10_000) * bps / 10_000;
+        whole_fee
+            .checked_add(remainder_fee)
             .ok_or(MarketplaceError::Overflow)
     }
 
@@ -2195,21 +2207,122 @@ impl MarketplaceContract {
         out
     }
 
+    /// Appends to the buyer's history. Only the last page is rewritten, so the
+    /// cost per purchase stays flat as the history grows (#916).
     fn add_user_purchase(env: &Env, buyer: &Address, purchase: Purchase) {
-        let mut purchases: Vec<Purchase> = env
+        let count_key = DataKey::UserPurchaseCount(buyer.clone());
+        let count = Self::user_purchase_count(env, buyer);
+        let page_key = DataKey::UserPurchasePage(buyer.clone(), count / USER_HISTORY_PAGE_SIZE);
+        let mut page: Vec<Purchase> = env
             .storage()
             .persistent()
-            .get::<_, Vec<Purchase>>(&DataKey::UserPurchases(buyer.clone()))
+            .get::<_, Vec<Purchase>>(&page_key)
             .unwrap_or_else(|| Vec::new(env));
-        purchases.push_back(purchase);
+        page.push_back(purchase);
+        env.storage().persistent().set(&page_key, &page);
         env.storage()
             .persistent()
-            .set(&DataKey::UserPurchases(buyer.clone()), &purchases);
-        env.storage().persistent().extend_ttl(
-            &DataKey::UserPurchases(buyer.clone()),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
+            .extend_ttl(&page_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage()
+            .persistent()
+            .set(&count_key, &count.saturating_add(1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&count_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    /// Appends a listing id to the seller's paged history (#916).
+    fn append_user_listing(env: &Env, seller: &Address, listing_id: u64) {
+        let count_key = DataKey::UserListingCount(seller.clone());
+        let count = Self::user_listing_count(env, seller);
+        let page_key = DataKey::UserListingPage(seller.clone(), count / USER_HISTORY_PAGE_SIZE);
+        let mut page: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<u64>>(&page_key)
+            .unwrap_or_else(|| Vec::new(env));
+        page.push_back(listing_id);
+        env.storage().persistent().set(&page_key, &page);
+        env.storage()
+            .persistent()
+            .extend_ttl(&page_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage()
+            .persistent()
+            .set(&count_key, &count.saturating_add(1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&count_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    fn user_listing_count(env: &Env, seller: &Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::UserListingCount(seller.clone()))
+            .unwrap_or(0)
+    }
+
+    fn user_purchase_count(env: &Env, buyer: &Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::UserPurchaseCount(buyer.clone()))
+            .unwrap_or(0)
+    }
+
+    /// Listings for history indices `start..end`, in order. Loads one page at
+    /// a time and skips ids whose listing record is gone.
+    fn read_user_listings(env: &Env, seller: &Address, start: u32, end: u32) -> Vec<Listing> {
+        let mut result: Vec<Listing> = Vec::new(env);
+        let mut i = start;
+        while i < end {
+            let page_index = i / USER_HISTORY_PAGE_SIZE;
+            let page: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get::<_, Vec<u64>>(&DataKey::UserListingPage(seller.clone(), page_index))
+                .unwrap_or_else(|| Vec::new(env));
+            let page_end = page_index
+                .saturating_add(1)
+                .saturating_mul(USER_HISTORY_PAGE_SIZE)
+                .min(end);
+            while i < page_end {
+                if let Some(id) = page.get(i % USER_HISTORY_PAGE_SIZE) {
+                    if let Some(listing) = env
+                        .storage()
+                        .persistent()
+                        .get::<_, Listing>(&DataKey::Listing(id))
+                    {
+                        result.push_back(listing);
+                    }
+                }
+                i += 1;
+            }
+        }
+        result
+    }
+
+    /// Purchases for history indices `start..end`, in order, one page at a time.
+    fn read_user_purchases(env: &Env, buyer: &Address, start: u32, end: u32) -> Vec<Purchase> {
+        let mut result: Vec<Purchase> = Vec::new(env);
+        let mut i = start;
+        while i < end {
+            let page_index = i / USER_HISTORY_PAGE_SIZE;
+            let page: Vec<Purchase> = env
+                .storage()
+                .persistent()
+                .get::<_, Vec<Purchase>>(&DataKey::UserPurchasePage(buyer.clone(), page_index))
+                .unwrap_or_else(|| Vec::new(env));
+            let page_end = page_index
+                .saturating_add(1)
+                .saturating_mul(USER_HISTORY_PAGE_SIZE)
+                .min(end);
+            while i < page_end {
+                if let Some(purchase) = page.get(i % USER_HISTORY_PAGE_SIZE) {
+                    result.push_back(purchase);
+                }
+                i += 1;
+            }
+        }
+        result
     }
 
     fn min_price_for_currency(env: &Env, currency: &Address, fee_bps: u32) -> i128 {
@@ -2356,3 +2469,34 @@ impl MarketplaceContract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod bps_tests {
+    use super::MarketplaceContract;
+
+    #[test]
+    fn bps_of_matches_multiply_then_divide_for_small_amounts() {
+        for amount in 0..=20_000_i128 {
+            for bps in [0_u32, 1, 25, 250, 9_999, 10_000] {
+                let expected = amount * bps as i128 / 10_000;
+                assert_eq!(MarketplaceContract::bps_of(amount, bps), Ok(expected));
+            }
+        }
+    }
+
+    #[test]
+    fn bps_of_settles_prices_above_the_old_overflow_boundary() {
+        let max = i128::MAX;
+        assert_eq!(MarketplaceContract::bps_of(max, 0), Ok(0));
+        assert_eq!(MarketplaceContract::bps_of(max, 10_000), Ok(max));
+
+        // Just past `i128::MAX / 10_000`, where `price * bps` used to overflow.
+        let boundary = max / 10_000 + 1;
+        assert_eq!(MarketplaceContract::bps_of(boundary, 10_000), Ok(boundary));
+        // 2.5% of `boundary` is exactly `boundary / 40` (floor identity).
+        assert_eq!(
+            MarketplaceContract::bps_of(boundary, 250),
+            Ok(boundary / 40)
+        );
+    }
+}

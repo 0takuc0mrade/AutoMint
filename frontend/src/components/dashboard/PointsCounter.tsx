@@ -14,7 +14,7 @@ export interface BotRateBreakdown {
 
 export interface PointsCounterProps {
   /** Total accumulated points to display */
-  points: number;
+  points: bigint;
   /** Aggregate accrual rate (pts/hr) */
   rate: number;
   /** Optional per-bot breakdown for the rate detail rows */
@@ -26,15 +26,27 @@ export interface PointsCounterProps {
 }
 
 /**
- * Animate a numeric value smoothly between updates.
+ * Animate a bigint value smoothly between updates.
+ * For values above MAX_SAFE_INTEGER, animation is skipped to preserve precision.
  */
-function useAnimatedNumber(target: number, duration = 0.8) {
+function useAnimatedNumber(target: bigint, duration = 0.8) {
   const [displayed, setDisplayed] = useState(target);
   const prev = useRef(target);
 
   useEffect(() => {
     const from = prev.current;
     prev.current = target;
+
+    const delta = target - from;
+    const deltaNum = Number(delta);
+    const canAnimate =
+      Number.isSafeInteger(deltaNum) && Number.isSafeInteger(Number(from));
+
+    if (!canAnimate) {
+      setDisplayed(target);
+      return;
+    }
+
     let start: number | null = null;
 
     const step = (timestamp: number) => {
@@ -42,7 +54,8 @@ function useAnimatedNumber(target: number, duration = 0.8) {
       const elapsed = (timestamp - start) / (duration * 1000);
       const t = Math.min(elapsed, 1);
       const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; // ease-in-out quad
-      setDisplayed(Math.round(from + (target - from) * eased));
+      const interpolated = Math.round(deltaNum * eased);
+      setDisplayed(from + BigInt(interpolated));
       if (t < 1) requestAnimationFrame(step);
     };
 

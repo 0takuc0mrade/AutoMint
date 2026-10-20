@@ -205,7 +205,7 @@ impl AccrualContract {
             .try_decimals()
             .ok()
             .and_then(|r| r.ok())
-            .unwrap_or(7);
+            .ok_or(AccrualError::TokenConfigFailed)?;
         let amt_scale: i128 = 10_i128.pow(decimals);
 
         env.storage().instance().set(

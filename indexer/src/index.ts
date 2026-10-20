@@ -31,6 +31,48 @@ const DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org";
 const DEFAULT_PORT = 8765;
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 
+/**
+ * Validate a numeric environment variable is a non-negative finite integer.
+ */
+function validateNonNegativeInt(
+  value: string | undefined,
+  name: string,
+  defaultValue: number,
+): number {
+  if (value === undefined) return defaultValue;
+
+  const parsed = Number(value);
+  if (
+    !Number.isFinite(parsed) ||
+    !Number.isInteger(parsed) ||
+    parsed < 0
+  ) {
+    throw new Error(
+      `Invalid ${name}="${value}": must be a non-negative integer`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Validate a numeric environment variable is a positive finite integer.
+ */
+function validatePositiveInt(
+  value: string | undefined,
+  name: string,
+  defaultValue: number,
+): number {
+  if (value === undefined) return defaultValue;
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `Invalid ${name}="${value}": must be a positive integer`,
+    );
+  }
+  return parsed;
+}
+
 function indexerRoot(): string {
   // src/index.ts → indexer (works for dist/index.js too)
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -62,7 +104,7 @@ export function buildRuntime(
   const rpc = new SorobanRpcClient(rpcUrl);
 
   const startLedger =
-    opts.startLedger ?? Number(process.env.AM_START_LEDGER ?? 0);
+    opts.startLedger ?? validateNonNegativeInt(process.env.AM_START_LEDGER, "AM_START_LEDGER", 0);
 
   const poller = new Poller({
     rpc,
@@ -87,10 +129,8 @@ export function buildRuntime(
 export async function main(): Promise<void> {
   const { db, poller, config, extraHealth } = buildRuntime();
 
-  const port = Number(process.env.AM_PORT ?? DEFAULT_PORT);
-  const intervalMs = Number(
-    process.env.AM_POLL_INTERVAL_MS ?? DEFAULT_POLL_INTERVAL_MS,
-  );
+  const port = validatePositiveInt(process.env.AM_PORT, "AM_PORT", DEFAULT_PORT);
+  const intervalMs = validatePositiveInt(process.env.AM_POLL_INTERVAL_MS, "AM_POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL_MS);
 
   const controller = new AbortController();
   const shutdown = () => {

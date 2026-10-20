@@ -3,6 +3,11 @@
 //! AutoMint registry: user directory, unique usernames, point totals, and
 //! leaderboards.
 //!
+//! Registrations are indexed in bounded `UserListPage` pages. `TotalUsers`
+//! remains a cached count for inexpensive landing-page reads; anyone can call
+//! `verify_user_count` to reconcile it against profiles that still exist.
+//! `users_since` uses each profile's `registered_at` timestamp.
+//!
 //! # Event catalogue (#370)
 //!
 //! Every state change publishes exactly one contract event. Topic layout is
@@ -58,12 +63,51 @@ pub enum DataKey {
     SeasonTop(u32),
     /// Current season counter (#371). Instance storage; absent = season 0.
     Season,
+    /// Cached profile count, reconciled by `verify_user_count`.
     TotalUsers,
     Admin,
     PendingAdmin,
     Initialized,
     // Authorized writer set (accrual + bot_nft) for #318 gating.
     Writers,
+    /// Addresses registered in page order, with `USER_LIST_PAGE_SIZE` entries
+    /// per page.
+    UserListPage(u32),
+    /// Number of allocated `UserListPage` entries.
+    UserListPageCount,
+}
+
+fn append_user_to_list(env: &Env, user: &Address) -> Result<(), RegistryError> {
+    let page_count: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::UserListPageCount)
+        .unwrap_or(0);
+    let page_index = page_count.saturating_sub(1);
+    let mut page: Vec<Address> = if page_count == 0 {
+        Vec::new(env)
+    } else {
+        env.storage()
+            .instance()
+            .get(&DataKey::UserListPage(page_index))
+            .unwrap_or_else(|| Vec::new(env))
+    };
+    let page_index = if page_count == 0 || page.len() >= USER_LIST_PAGE_SIZE {
+        let new_page_index = page_count;
+        let next_page_count = page_count.checked_add(1).ok_or(RegistryError::Overflow)?;
+        page = Vec::new(env);
+        env.storage()
+            .instance()
+            .set(&DataKey::UserListPageCount, &next_page_count);
+        new_page_index
+    } else {
+        page_index
+    };
+    page.push_back(user.clone());
+    env.storage()
+        .instance()
+        .set(&DataKey::UserListPage(page_index), &page);
+    Ok(())
 }
 
 // #39: Define UserProfile struct
@@ -152,6 +196,8 @@ pub const UNRANKED: u32 = u32::MAX;
 
 /// Maximum number of addresses a single `get_users_batch` call accepts.
 pub const MAX_USERS_BATCH: u32 = 50;
+/// Number of user addresses indexed in each registry list page.
+const USER_LIST_PAGE_SIZE: u32 = 100;
 
 #[contract]
 pub struct RegistryContract;
@@ -223,6 +269,7 @@ impl RegistryContract {
         };
 
         Self::persist_profile(&env, &user, &profile);
+        append_user_to_list(&env, &user)?;
 
         // Store username mapping (lowercased key)
         env.storage()
@@ -765,6 +812,74 @@ impl RegistryContract {
             .unwrap_or(0)
     }
 
+    /// Recomputes the registered profile count from the paged user index and
+    /// repairs the cached count. Safe to call repeatedly.
+    pub fn verify_user_count(env: Env) -> Result<u32, RegistryError> {
+        let mut count = 0_u32;
+        let page_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserListPageCount)
+            .unwrap_or(0);
+        for page_index in 0..page_count {
+            let page: Vec<Address> = env
+                .storage()
+                .instance()
+                .get(&DataKey::UserListPage(page_index))
+                .unwrap_or_else(|| Vec::new(&env));
+            for user in page.iter() {
+                if env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::UserProfile(user))
+                {
+                    count = count.checked_add(1).ok_or(RegistryError::Overflow)?;
+                }
+            }
+        }
+
+        let previous: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalUsers)
+            .unwrap_or(0);
+        if previous != count {
+            env.storage().instance().set(&DataKey::TotalUsers, &count);
+            env.events()
+                .publish((symbol_short!("usercnt"),), (previous, count));
+        }
+        Ok(count)
+    }
+
+    /// Counts profiles registered at or after `timestamp`.
+    pub fn users_since(env: Env, timestamp: u64) -> u32 {
+        let page_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserListPageCount)
+            .unwrap_or(0);
+        let mut count = 0_u32;
+        for page_index in 0..page_count {
+            let page: Vec<Address> = env
+                .storage()
+                .instance()
+                .get(&DataKey::UserListPage(page_index))
+                .unwrap_or_else(|| Vec::new(&env));
+            for user in page.iter() {
+                if let Some(profile) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, UserProfile>(&DataKey::UserProfile(user))
+                {
+                    if profile.registered_at >= timestamp {
+                        count = count.saturating_add(1);
+                    }
+                }
+            }
+        }
+        count
+    }
+
     pub fn get_admin(env: Env) -> Result<Address, RegistryError> {
         env.storage()
             .instance()
@@ -889,7 +1004,7 @@ extern crate std;
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Events, MockAuth, MockAuthInvoke};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke};
     use soroban_sdk::{Env, IntoVal, String, Symbol, TryFromVal, Val};
 
     fn setup() -> (Env, Address, RegistryContractClient<'static>) {
@@ -1627,6 +1742,49 @@ mod test {
         let user2 = Address::generate(&env);
         client.register(&user2, &String::from_str(&env, "user2"));
         assert_eq!(client.total_users(), initial_count + 2);
+    }
+
+    #[test]
+    fn test_verify_user_count_repairs_drift_after_failed_registrations() {
+        let (env, _admin, client) = setup();
+        for index in 0..100_u32 {
+            let user = Address::generate(&env);
+            client.register(
+                &user,
+                &String::from_str(&env, &std::format!("user{}", index)),
+            );
+        }
+        for _ in 0..5 {
+            let user = Address::generate(&env);
+            assert_eq!(
+                client.try_register(&user, &String::from_str(&env, "user0")),
+                Err(Ok(RegistryError::UsernameTaken))
+            );
+        }
+
+        env.as_contract(&client.address, || {
+            env.storage().instance().set(&DataKey::TotalUsers, &7_u32);
+        });
+        assert_eq!(client.verify_user_count(), 100);
+        assert_eq!(client.total_users(), 100);
+        assert_eq!(client.verify_user_count(), 100);
+        assert_eq!(client.total_users(), 100);
+    }
+
+    #[test]
+    fn test_users_since_counts_profiles_inclusively_by_registration_time() {
+        let (env, _admin, client) = setup();
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+
+        env.ledger().set_timestamp(10);
+        client.register(&first, &String::from_str(&env, "first"));
+        env.ledger().set_timestamp(20);
+        client.register(&second, &String::from_str(&env, "second"));
+
+        assert_eq!(client.users_since(20), 1);
+        assert_eq!(client.users_since(10), 2);
+        assert_eq!(client.users_since(21), 0);
     }
 
     // #373: usernames are case-insensitive for uniqueness but preserve the

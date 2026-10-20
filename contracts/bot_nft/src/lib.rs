@@ -133,6 +133,8 @@ pub enum DataKey {
     Registry,
     TierSupply(BotTier),
     TierRate(BotTier),
+    /// Optional per-tier mint cap (#385). Stored as u64; absent or 0 means uncapped.
+    TierCap(BotTier),
     Marketplace,
     Accrual,
     PaymentToken,
@@ -181,6 +183,11 @@ pub enum BotNFTError {
     InsufficientTreasury = 14,
     /// The bot id counter has reached `u64::MAX`; no further bot can be minted.
     Overflow = 15,
+    /// The optional per-tier mint cap has been reached; no further mints of this
+    /// tier are allowed until the admin raises or removes the cap (#385).
+    TierSoldOut = 16,
+    /// Admin attempted to lower the cap below the current minted supply (#385).
+    CapBelowSupply = 17,
     /// The approval has expired (current ledger >= expiration_ledger).
     ApprovalExpired = 16,
     /// The caller is neither the owner, an approved spender, nor an approved operator.
@@ -325,6 +332,68 @@ impl BotNFTContract {
             .unwrap_or_else(|| tier.rate())
     }
 
+    // ── Per-tier mint cap (#385) ───────────────────────────────────────────
+
+    /// Admin-only setter for the optional per-tier mint cap.
+    ///
+    /// `cap == 0` removes the cap (minting becomes unlimited for that tier).
+    /// Attempting to set a cap *below* the current minted supply fails with
+    /// `CapBelowSupply` to prevent retroactively breaking an active mint.
+    pub fn set_tier_cap(env: Env, tier: BotTier, cap: u64) -> Result<(), BotNFTError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(BotNFTError::NotInitialized)?;
+        admin.require_auth();
+
+        // Disallow setting a cap that is already exceeded by live supply
+        // (except cap == 0, which means "remove cap").
+        if cap > 0 {
+            let current_supply = Self::tier_supply(&env, tier);
+            if cap < current_supply {
+                return Err(BotNFTError::CapBelowSupply);
+            }
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TierCap(tier), &cap);
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        env.events()
+            .publish((symbol_short!("cap_set"), tier), cap);
+        Ok(())
+    }
+
+    /// Return the configured cap for `tier`. 0 means uncapped.
+    pub fn tier_cap(env: Env, tier: BotTier) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TierCap(tier))
+            .unwrap_or(0)
+    }
+
+    /// Return the number of remaining mint slots for `tier`.
+    ///
+    /// If the tier is uncapped (cap == 0) `u64::MAX` is returned as a
+    /// sentinel so callers can display "∞".
+    /// Frontend display: `if remaining == u64::MAX { "∞" } else { remaining.to_string() }`
+    pub fn tier_remaining(env: Env, tier: BotTier) -> u64 {
+        let cap: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TierCap(tier))
+            .unwrap_or(0);
+        if cap == 0 {
+            return u64::MAX; // uncapped sentinel
+        }
+        let supply = Self::tier_supply(&env, tier);
+        cap.saturating_sub(supply)
+    }
+
     pub fn mint_basic(env: Env, owner: Address) -> Result<u64, BotNFTError> {
         if !env.storage().instance().has(&DataKey::Initialized) {
             return Err(BotNFTError::NotInitialized);
@@ -466,10 +535,21 @@ impl BotNFTContract {
             bonus_bps,
         };
 
-        // Enforce per-tier supply cap.
+        // Enforce hard-coded per-tier supply cap (MAX_TIER_SUPPLY).
         let supply = Self::tier_supply(env, tier).saturating_add(1);
         if supply > MAX_TIER_SUPPLY {
             return Err(BotNFTError::SupplyCapExceeded);
+        }
+
+        // Enforce optional admin-configurable per-tier cap (#385).
+        // A stored cap of 0 (or absent) means uncapped.
+        let opt_cap: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TierCap(tier))
+            .unwrap_or(0);
+        if opt_cap > 0 && supply > opt_cap {
+            return Err(BotNFTError::TierSoldOut);
         }
         env.storage()
             .persistent()

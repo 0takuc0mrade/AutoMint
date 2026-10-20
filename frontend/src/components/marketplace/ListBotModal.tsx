@@ -100,11 +100,6 @@ export default function ListBotModal({ bot, isOpen, onClose }: ListBotModalProps
           setPriceXlm("");
           setTouched(false);
         },
-        onError: (err) => {
-          toast.error(
-            err instanceof Error ? err.message : "Failed to list bot for sale. Please try again.",
-          );
-        },
       },
     );
   };

@@ -21,6 +21,7 @@ import { pollWhenVisible } from "@/lib/polling";
 import { STALE_TIME, GC_TIME, qk, DASHBOARD_POLL_MS } from "@/lib/queryKeys";
 import { trackStatus, newTxId } from "@/components/ui/TxStatus";
 import { COUNTER_TICK_MS } from "@/lib/constants";
+import { toastContractError } from "@/lib/errors";
 
 const POINTS_PER_HOUR_DIVISOR = 3600; // Seconds in an hour
 
@@ -142,9 +143,6 @@ export function useRegister() {
                   resolve(status);
                   break;
                 case "error":
-                  toast.error(`${label}: ${status.error || "Unknown error"}`, {
-                    id: label,
-                  });
                   reject(new Error(`${label} failed: ${status.error}`));
                   break;
               }
@@ -207,7 +205,13 @@ export function useRegister() {
       toast.success("Registration complete! Welcome to AutoMint!");
     },
     onError: (error: Error) => {
-      // onStatus callbacks already handle error toasts
+      const contract =
+        progress?.step === "mint"
+          ? "botNft"
+          : progress?.step === "accrual"
+            ? "accrual"
+            : "registry";
+      toastContractError(error, contract);
       console.error("Registration failed:", error);
     },
   });
@@ -509,7 +513,7 @@ export function useClaim() {
         queryClient.setQueryData(qk.accrualState(publicKey), context.previousAccrual);
         queryClient.setQueryData(qk.dashboard(publicKey), context.previousDashboard);
       }
-      // onStatus callback already handles error toasts
+      toastContractError(error, "accrual");
       console.error("Claim failed:", error);
     },
     onSettled: () => {

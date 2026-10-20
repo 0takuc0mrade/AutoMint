@@ -20,6 +20,8 @@
 //! | `TotalSupply` | Persistent | Mint and burn refresh to the 180-day maximum TTL; dormant supply entries may archive. |
 //! | `MaxSupply` | Persistent | Set or removed by the admin; no separate entry TTL refresh is currently applied. |
 //! | `Locked` | Persistent | Reserved-balance key; no writer currently exists, and future writes must define a TTL refresh policy. |
+//! | `MintLimit` | Instance | Admin-configured per-window ceiling; a zero ceiling disables the limit. |
+//! | `MintWindow` | Instance | Ledger window start and the amount minted in that window. |
 //!
 //! An allowance remains valid at `expiration_ledger` itself (inclusive), but
 //! its temporary entry can become unreadable earlier if that entry is archived.
@@ -43,6 +45,10 @@
 //! | `set_admin`   | `("set_admin", admin)`           | `new_admin: Address`   |
 //! | `admin_cancel` | `("admin_cancel",)`              | `cancelled_admin: Address` |
 //! | `metadata`    | `("metadata",)`                  | `(old_name, old_symbol, new_name, new_symbol)` |
+//!
+//! Mutating methods follow one evaluation order: check initialization,
+//! validate arguments, authorize the caller, read state, apply effects, then
+//! emit events. Invalid arguments therefore fail before signature checks.
 use automint_common::{PausableStore, LEDGER_THRESHOLD};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenInterface,
@@ -60,6 +66,8 @@ pub enum DataKey {
     MaxSupply,       // #339
     Locked(Address), // #344: reserved balance excluded from spendable_balance
     PendingAdmin,
+    MintLimit,
+    MintWindow,
 }
 
 #[derive(Clone)]
@@ -105,6 +113,22 @@ pub enum TokenError {
     NoPendingAdmin = 13,
     LengthMismatch = 14,
     BatchTooLarge = 15,
+    MintLimitExceeded = 16,
+    InvalidMintLimit = 17,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct MintLimit {
+    pub max_per_window: i128,
+    pub window_ledgers: u32,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct MintWindow {
+    pub window_start_ledger: u32,
+    pub minted_in_window: i128,
 }
 
 /// Maximum recipients accepted by [`AMTToken::transfer_batch`].
@@ -141,10 +165,11 @@ impl AMTToken {
         if env.storage().instance().has(&DataKey::State) {
             return Err(TokenError::AlreadyInitialized);
         }
-        admin.require_auth();
         if decimal == 0 {
             return Err(TokenError::InvalidDecimals);
         }
+        Self::validate_metadata(&name, &symbol)?;
+        admin.require_auth();
         let state = TokenState {
             decimal,
             name,
@@ -174,13 +199,8 @@ impl AMTToken {
         amount: i128,
         expiration_ledger: u32,
     ) -> Result<(), TokenError> {
-        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?; // #336
-        if !env.storage().instance().has(&DataKey::State) {
-            return Err(TokenError::NotInitialized);
-        }
-        from.require_auth();
+        Self::require_initialized(&env)?;
         Self::validate_amount(amount)?;
-        // #341: SEP-41 permits self-approval; removed from == spender rejection
         let current = env.ledger().sequence();
         // #346: a past expiration is only meaningful as a revoke (amount ==
         // 0); for a non-zero amount it would write an entry with the
@@ -192,6 +212,9 @@ impl AMTToken {
         if expiration_ledger > current.saturating_add(MAX_ALLOWANCE_LEDGERS) {
             return Err(TokenError::InvalidExpiration);
         }
+        from.require_auth();
+        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?; // #336
+        // #341: SEP-41 permits self-approval; removed from == spender rejection
         let key = DataKey::Allowance(AllowanceKey {
             from: from.clone(),
             spender: spender.clone(),
@@ -234,10 +257,12 @@ impl AMTToken {
     }
 
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) -> Result<(), TokenError> {
-        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?; // #336
+        Self::require_initialized(&env)?;
+        let is_zero = Self::validate_amount(amount)?;
         from.require_auth();
+        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?; // #336
 
-        if Self::validate_amount(amount)? {
+        if is_zero {
             return Ok(());
         }
 
@@ -262,9 +287,7 @@ impl AMTToken {
         recipients: soroban_sdk::Vec<Address>,
         amounts: soroban_sdk::Vec<i128>,
     ) -> Result<(), TokenError> {
-        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?;
-        from.require_auth();
-
+        Self::require_initialized(&env)?;
         if recipients.len() != amounts.len() {
             return Err(TokenError::LengthMismatch);
         }
@@ -301,6 +324,9 @@ impl AMTToken {
                 credits.push_back((recipient, amount));
             }
         }
+
+        from.require_auth();
+        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?;
 
         let source_balance = Self::balance(env.clone(), from.clone());
         if source_balance < total {
@@ -379,11 +405,12 @@ impl AMTToken {
         to: Address,
         amount: i128,
     ) -> Result<(), TokenError> {
-        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?; // #336
-        spender.require_auth();
-
+        Self::require_initialized(&env)?;
         // Zero-amount transfers are a no-op (no allowance consumed, no state change)
-        if Self::validate_amount(amount)? {
+        let is_zero = Self::validate_amount(amount)?;
+        spender.require_auth();
+        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?; // #336
+        if is_zero {
             return Ok(());
         }
 
@@ -411,10 +438,12 @@ impl AMTToken {
     }
 
     pub fn burn(env: Env, from: Address, amount: i128) -> Result<(), TokenError> {
-        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?; // #336
+        Self::require_initialized(&env)?;
+        let is_zero = Self::validate_amount(amount)?;
         from.require_auth();
+        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?; // #336
 
-        if Self::validate_amount(amount)? {
+        if is_zero {
             return Ok(()); // No-op for zero amount
         }
 
@@ -444,9 +473,11 @@ impl AMTToken {
         from: Address,
         amount: i128,
     ) -> Result<(), TokenError> {
-        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?;
+        Self::require_initialized(&env)?;
+        let is_zero = Self::validate_amount(amount)?;
         spender.require_auth();
-        if Self::validate_amount(amount)? {
+        PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?;
+        if is_zero {
             return Ok(());
         }
 
@@ -468,11 +499,15 @@ impl AMTToken {
     }
 
     pub fn mint(env: Env, to: Address, amount: i128) -> Result<(), TokenError> {
+        Self::require_initialized(&env)?;
+        let is_zero = Self::validate_amount(amount)?;
+        let admin = Self::admin_for_auth(&env)?;
         PausableStore::require_not_paused(&env).map_err(|_| TokenError::Paused)?; // #336
-        Self::require_admin(&env)?;
-        if Self::validate_amount(amount)? {
+        if is_zero {
             return Ok(());
         }
+
+        let mint_window = Self::check_mint_limit(&env, &admin, amount)?;
 
         let balance = Self::balance(env.clone(), to.clone());
         let new_balance = balance.checked_add(amount).ok_or(TokenError::Overflow)?;
@@ -490,18 +525,52 @@ impl AMTToken {
             }
         }
 
+        if let Some(window) = mint_window {
+            env.storage().instance().set(&DataKey::MintWindow, &window);
+        }
         Self::write_total_supply(&env, new_supply);
         Self::write_balance(&env, &to, new_balance);
         Self::extend_instance_ttl(&env);
         // #347: SAC shape is `mint(admin, to) -> amount` — include the
         // authorizing admin in the topic, not just the recipient.
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(TokenError::NotInitialized)?;
         env.events()
             .publish((symbol_short!("mint"), admin, to), amount);
+        Ok(())
+    }
+
+    /// Admin-only mint ceiling. A zero maximum disables the limiter;
+    /// enabled limits require a non-zero window length.
+    pub fn set_mint_limit(
+        env: Env,
+        max_per_window: i128,
+        window_ledgers: u32,
+    ) -> Result<(), TokenError> {
+        Self::require_initialized(&env)?;
+        if max_per_window < 0 || (max_per_window > 0 && window_ledgers == 0) {
+            return Err(TokenError::InvalidMintLimit);
+        }
+        let admin = Self::admin_for_auth(&env)?;
+        env.storage().instance().set(
+            &DataKey::MintLimit,
+            &MintLimit {
+                max_per_window,
+                window_ledgers,
+            },
+        );
+        if !env.storage().instance().has(&DataKey::MintWindow) {
+            env.storage().instance().set(
+                &DataKey::MintWindow,
+                &MintWindow {
+                    window_start_ledger: env.ledger().sequence(),
+                    minted_in_window: 0,
+                },
+            );
+        }
+        Self::extend_instance_ttl(&env);
+        env.events().publish(
+            (symbol_short!("mintlim"), admin),
+            (max_per_window, window_ledgers),
+        );
         Ok(())
     }
 
@@ -509,9 +578,7 @@ impl AMTToken {
     /// remains active until the proposed address calls `accept_admin`.
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), TokenError> {
         // Guard: contract must be initialized before admin can be transferred
-        if !env.storage().instance().has(&DataKey::State) {
-            return Err(TokenError::NotInitialized);
-        }
+        Self::require_initialized(&env)?;
 
         // Resolve and authenticate the current admin
         let current_admin: Address = env
@@ -519,13 +586,13 @@ impl AMTToken {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(TokenError::NotInitialized)?;
-        current_admin.require_auth();
 
         // Reject self-assignment — transferring admin to the current admin is a no-op
         // that wastes a transaction; callers should be aware of the current admin.
         if new_admin == current_admin {
             return Err(TokenError::Unauthorized);
         }
+        current_admin.require_auth();
 
         env.storage()
             .instance()
@@ -544,6 +611,7 @@ impl AMTToken {
     /// Accepts the pending admin proposal. Only the nominated address can
     /// call this method.
     pub fn accept_admin(env: Env) -> Result<(), TokenError> {
+        Self::require_initialized(&env)?;
         let pending: Address = env
             .storage()
             .instance()
@@ -565,6 +633,7 @@ impl AMTToken {
 
     /// Cancels the pending admin proposal. Only the current admin can cancel.
     pub fn cancel_admin_transfer(env: Env) -> Result<(), TokenError> {
+        Self::require_initialized(&env)?;
         Self::require_admin(&env)?;
         let pending: Address = env
             .storage()
@@ -621,12 +690,15 @@ impl AMTToken {
 
     /// Admin-only: set the maximum supply cap. Fails if cap is below current supply (#339)
     pub fn set_max_supply(env: Env, new_cap: Option<i128>) -> Result<(), TokenError> {
-        Self::require_admin(&env)?;
+        Self::require_initialized(&env)?;
 
         if let Some(cap) = new_cap {
             if cap < 0 {
                 return Err(TokenError::NegativeAmount);
             }
+        }
+        Self::require_admin(&env)?;
+        if let Some(cap) = new_cap {
             let current_supply = Self::total_supply(env.clone());
             if cap < current_supply {
                 return Err(TokenError::SupplyCapExceeded);
@@ -652,6 +724,7 @@ impl AMTToken {
 
     /// Pauses the contract (admin-only) (#336)
     pub fn pause(env: Env) -> Result<(), TokenError> {
+        Self::require_initialized(&env)?;
         Self::require_admin(&env)?;
         PausableStore::set_paused(&env, true);
         env.events().publish((symbol_short!("pause"),), true);
@@ -660,6 +733,7 @@ impl AMTToken {
 
     /// Unpauses the contract (admin-only) (#336)
     pub fn unpause(env: Env) -> Result<(), TokenError> {
+        Self::require_initialized(&env)?;
         Self::require_admin(&env)?;
         PausableStore::set_paused(&env, false);
         env.events().publish((symbol_short!("unpause"),), false);
@@ -668,6 +742,7 @@ impl AMTToken {
 
     /// Upgrades the contract wasm (admin-only) (#336)
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), TokenError> {
+        Self::require_initialized(&env)?;
         Self::require_admin(&env)?;
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         env.events().publish((symbol_short!("upgrade"),), ());
@@ -704,8 +779,9 @@ impl AMTToken {
     /// Updates the token's display name and symbol. Decimal precision is
     /// deliberately immutable: changing it would reprice every stored balance.
     pub fn set_metadata(env: Env, name: String, symbol: String) -> Result<(), TokenError> {
-        Self::require_admin(&env)?;
+        Self::require_initialized(&env)?;
         Self::validate_metadata(&name, &symbol)?;
+        Self::require_admin(&env)?;
         let mut state: TokenState = env
             .storage()
             .instance()
@@ -738,6 +814,14 @@ impl AMTToken {
             return Err(TokenError::NegativeAmount);
         }
         Ok(amount == 0)
+    }
+
+    fn require_initialized(env: &Env) -> Result<(), TokenError> {
+        if env.storage().instance().has(&DataKey::State) {
+            Ok(())
+        } else {
+            Err(TokenError::NotInitialized)
+        }
     }
 
     fn extend_instance_ttl(env: &Env) {
@@ -777,13 +861,62 @@ impl AMTToken {
     }
 
     fn require_admin(env: &Env) -> Result<(), TokenError> {
+        Self::admin_for_auth(env).map(|_| ())
+    }
+
+    fn admin_for_auth(env: &Env) -> Result<Address, TokenError> {
         let admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(TokenError::NotInitialized)?;
         admin.require_auth();
-        Ok(())
+        Ok(admin)
+    }
+
+    fn check_mint_limit(
+        env: &Env,
+        admin: &Address,
+        amount: i128,
+    ) -> Result<Option<MintWindow>, TokenError> {
+        let Some(limit) = env.storage().instance().get::<_, MintLimit>(&DataKey::MintLimit)
+        else {
+            return Ok(None);
+        };
+        if limit.max_per_window == 0 {
+            return Ok(None);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        let mut window = env
+            .storage()
+            .instance()
+            .get::<_, MintWindow>(&DataKey::MintWindow)
+            .unwrap_or(MintWindow {
+                window_start_ledger: current_ledger,
+                minted_in_window: 0,
+            });
+        if current_ledger.saturating_sub(window.window_start_ledger) >= limit.window_ledgers {
+            window.window_start_ledger = current_ledger;
+            window.minted_in_window = 0;
+        }
+
+        let Some(next_total) = window.minted_in_window.checked_add(amount) else {
+            env.events().publish(
+                (symbol_short!("limithit"), admin.clone()),
+                (amount, limit.max_per_window, window.minted_in_window),
+            );
+            return Err(TokenError::MintLimitExceeded);
+        };
+        if next_total > limit.max_per_window {
+            env.events().publish(
+                (symbol_short!("limithit"), admin.clone()),
+                (amount, limit.max_per_window, window.minted_in_window),
+            );
+            return Err(TokenError::MintLimitExceeded);
+        }
+        window.minted_in_window = next_total;
+        Ok(Some(window))
     }
 
     /// Rejects negative amounts, treats zero as a no-op, then validates
@@ -945,6 +1078,68 @@ mod test {
         let user = Address::generate(&env);
         client.mint(&user, &10_000_000_000_i128);
         assert_eq!(client.balance(&user), 10_000_000_000_i128);
+    }
+
+    #[test]
+    fn test_mint_validates_negative_amount_before_admin_authorization() {
+        let (env, _admin, client) = setup();
+        let recipient = Address::generate(&env);
+        env.mock_auths(&[]);
+
+        assert_eq!(
+            client.try_mint(&recipient, &-1_i128),
+            Err(Ok(TokenError::NegativeAmount))
+        );
+    }
+
+    #[test]
+    fn test_mint_limit_rejects_excess_and_resets_after_window() {
+        let (env, _admin, client) = setup();
+        let recipient = Address::generate(&env);
+        client.set_mint_limit(&1_000_i128, &100_u32);
+        client.mint(&recipient, &1_000_i128);
+
+        assert_eq!(
+            client.try_mint(&recipient, &1_i128),
+            Err(Ok(TokenError::MintLimitExceeded))
+        );
+        assert_eq!(client.balance(&recipient), 1_000_i128);
+        assert_eq!(client.total_supply(), 1_000_i128);
+        assert!(env.events().all().iter().any(|(_, topics, _)| {
+            topics
+                .get(0)
+                .and_then(|topic| Symbol::try_from_val(&env, &topic).ok())
+                == Some(symbol_short!("limithit"))
+        }));
+
+        let current = env.ledger().sequence();
+        env.ledger().set_sequence_number(current + 100);
+        client.mint(&recipient, &1_i128);
+        assert_eq!(client.balance(&recipient), 1_001_i128);
+    }
+
+    #[test]
+    fn test_zero_mint_limit_disables_rate_limiting() {
+        let (env, _admin, client) = setup();
+        let recipient = Address::generate(&env);
+        client.set_mint_limit(&1_i128, &10_u32);
+        client.mint(&recipient, &1_i128);
+        assert_eq!(
+            client.try_mint(&recipient, &1_i128),
+            Err(Ok(TokenError::MintLimitExceeded))
+        );
+
+        client.set_mint_limit(&0_i128, &0_u32);
+        client.mint(&recipient, &10_i128);
+        assert_eq!(client.balance(&recipient), 11_i128);
+    }
+
+    #[test]
+    fn test_non_admin_cannot_set_mint_limit() {
+        let (env, _admin, client) = setup();
+        env.mock_auths(&[]);
+
+        assert!(client.try_set_mint_limit(&1_000_i128, &100_u32).is_err());
     }
 
     #[test]

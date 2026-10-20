@@ -137,6 +137,21 @@ pub enum DataKey {
     Accrual,
     PaymentToken,
     TierIndex(BotTier),
+    /// Single-token approval: maps bot_id -> ApprovalEntry.
+    Approval(u64),
+    /// Operator approval: maps (owner, operator) -> bool.
+    OperatorApproval(Address, Address),
+}
+
+/// Stored data for a single-token approval.
+#[derive(Clone)]
+#[contracttype]
+pub struct ApprovalEntry {
+    /// The approved spender address.
+    pub spender: Address,
+    /// The ledger sequence number at or after which this approval expires.
+    /// Set to `u32::MAX` to indicate no expiry within the contract's lifetime.
+    pub expiration_ledger: u32,
 }
 
 #[contracterror]
@@ -160,6 +175,10 @@ pub enum BotNFTError {
     InsufficientTreasury = 14,
     /// The bot id counter has reached `u64::MAX`; no further bot can be minted.
     Overflow = 15,
+    /// The approval has expired (current ledger >= expiration_ledger).
+    ApprovalExpired = 16,
+    /// The caller is neither the owner, an approved spender, nor an approved operator.
+    NotApproved = 17,
 }
 
 const LEDGER_BUMP: u32 = 120960;
@@ -507,13 +526,200 @@ impl BotNFTContract {
             return Err(BotNFTError::NotOwner);
         }
 
+        Self::do_transfer(&env, bot_id, &bot, &from, &to)
+    }
+
+    // ── Approval model ────────────────────────────────────────────────────────
+
+    /// Grant `spender` the right to transfer exactly one bot (`bot_id`) on
+    /// behalf of its owner.  The approval expires at `expiration_ledger`; pass
+    /// `u32::MAX` to request no practical expiry.  Passing the zero address
+    /// (or any value for which the owner clears by convention) can be done by
+    /// setting `expiration_ledger` to the current ledger, which immediately
+    /// expires.
+    ///
+    /// Only the current owner (or an approved operator) may call this.
+    /// The single-token approval is cleared automatically by any transfer.
+    pub fn approve(
+        env: Env,
+        owner: Address,
+        spender: Address,
+        bot_id: u64,
+        expiration_ledger: u32,
+    ) -> Result<(), BotNFTError> {
+        let bot: BotNFT = Self::get_bot(env.clone(), bot_id)?;
+        if bot.owner != owner {
+            return Err(BotNFTError::NotOwner);
+        }
+        owner.require_auth();
+
+        if expiration_ledger < env.ledger().sequence() {
+            // Immediately-expired approval is treated as a revocation.
+            env.storage().persistent().remove(&DataKey::Approval(bot_id));
+        } else {
+            let entry = ApprovalEntry {
+                spender: spender.clone(),
+                expiration_ledger,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::Approval(bot_id), &entry);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Approval(bot_id),
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP,
+            );
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        env.events().publish(
+            (symbol_short!("approve"), owner, spender),
+            (bot_id, expiration_ledger),
+        );
+        Ok(())
+    }
+
+    /// Return the currently-approved spender for `bot_id`, or `None` if there
+    /// is no valid (non-expired) approval.
+    pub fn get_approved(env: Env, bot_id: u64) -> Option<Address> {
+        let entry: ApprovalEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Approval(bot_id))?;
+        if entry.expiration_ledger < env.ledger().sequence() {
+            None
+        } else {
+            Some(entry.spender)
+        }
+    }
+
+    /// Allow (or disallow) `operator` to transfer any bot owned by `owner`.
+    ///
+    /// Setting `approved = false` revokes the approval.  Operators are not
+    /// subject to per-token expiry — revoke explicitly.
+    pub fn set_approval_for_all(
+        env: Env,
+        owner: Address,
+        operator: Address,
+        approved: bool,
+    ) -> Result<(), BotNFTError> {
+        if owner == operator {
+            // No-op: an owner is always implicitly their own operator.
+            return Ok(());
+        }
+        owner.require_auth();
+
+        if approved {
+            env.storage()
+                .persistent()
+                .set(&DataKey::OperatorApproval(owner.clone(), operator.clone()), &true);
+            env.storage().persistent().extend_ttl(
+                &DataKey::OperatorApproval(owner.clone(), operator.clone()),
+                LEDGER_THRESHOLD,
+                LEDGER_BUMP,
+            );
+        } else {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::OperatorApproval(owner.clone(), operator.clone()));
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        env.events().publish(
+            (symbol_short!("op_appr"), owner, operator),
+            approved,
+        );
+        Ok(())
+    }
+
+    /// Return `true` if `operator` is approved to manage all bots owned by `owner`.
+    pub fn is_approved_for_all(env: Env, owner: Address, operator: Address) -> bool {
+        if owner == operator {
+            return true;
+        }
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::OperatorApproval(owner, operator))
+            .unwrap_or(false)
+    }
+
+    /// Transfer `bot_id` from `from` to `to`, called by an approved `spender`
+    /// rather than the owner directly.
+    ///
+    /// Authorization rules (in order):
+    ///  1. `spender` is the current owner  → behaves like `transfer`.
+    ///  2. `spender` is an approved operator for `from` → allowed.
+    ///  3. `spender` has a valid (non-expired) single-token approval for
+    ///     this exact `bot_id` → allowed once; approval is cleared after use.
+    ///
+    /// The single-token approval is always cleared by a successful transfer.
+    pub fn transfer_from(
+        env: Env,
+        spender: Address,
+        from: Address,
+        to: Address,
+        bot_id: u64,
+    ) -> Result<(), BotNFTError> {
+        spender.require_auth();
+
+        if from == to {
+            return Ok(());
+        }
+
+        let bot: BotNFT = Self::get_bot(env.clone(), bot_id)?;
+
+        if bot.owner != from {
+            return Err(BotNFTError::NotOwner);
+        }
+
+        // Check authorisation: owner path, operator path, single-token approval.
+        if spender != from {
+            let is_operator = Self::is_approved_for_all(env.clone(), from.clone(), spender.clone());
+            if !is_operator {
+                // Fall through to single-token approval check.
+                let entry: Option<ApprovalEntry> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Approval(bot_id));
+                match entry {
+                    Some(a) if a.spender == spender => {
+                        if a.expiration_ledger < env.ledger().sequence() {
+                            // Expired — clean up and reject.
+                            env.storage().persistent().remove(&DataKey::Approval(bot_id));
+                            return Err(BotNFTError::ApprovalExpired);
+                        }
+                        // Valid single-token approval — will be consumed below.
+                    }
+                    _ => return Err(BotNFTError::NotApproved),
+                }
+            }
+        }
+
+        Self::do_transfer(&env, bot_id, &bot, &from, &to)
+    }
+
+    // ── Internal transfer implementation ──────────────────────────────────────
+
+    /// Shared transfer logic used by both `transfer` and `transfer_from`.
+    /// Clears any single-token approval for `bot_id` as part of the transfer.
+    fn do_transfer(
+        env: &Env,
+        bot_id: u64,
+        bot: &BotNFT,
+        from: &Address,
+        to: &Address,
+    ) -> Result<(), BotNFTError> {
         let stored = StoredBotNFT {
             id: bot.id,
             tier: bot.tier,
             owner: to.clone(),
-            minter: bot.minter,
+            minter: bot.minter.clone(),
             minted_at: bot.minted_at,
-            nickname: bot.nickname,
+            nickname: bot.nickname.clone(),
             variant: bot.variant,
             bonus_bps: bot.bonus_bps,
         };
@@ -526,29 +732,33 @@ impl BotNFTContract {
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
-        Self::remove_bot_from_user(&env, &from, bot_id);
-        Self::add_bot_to_user(&env, &to, bot_id);
-        Self::sync_rate(&env, &from);
-        Self::sync_rate(&env, &to);
+
+        // ERC-721 §: clear single-token approval on any transfer.
+        env.storage().persistent().remove(&DataKey::Approval(bot_id));
+
+        Self::remove_bot_from_user(env, from, bot_id);
+        Self::add_bot_to_user(env, to, bot_id);
+        Self::sync_rate(env, from);
+        Self::sync_rate(env, to);
 
         if let Some(mkt_addr) = env
             .storage()
             .instance()
             .get::<_, Address>(&DataKey::Marketplace)
         {
-            if to != mkt_addr {
-                let mut args = Vec::new(&env);
-                args.push_back(bot_id.into_val(&env));
+            if *to != mkt_addr {
+                let mut args = Vec::new(env);
+                args.push_back(bot_id.into_val(env));
                 let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
                     &mkt_addr,
-                    &soroban_sdk::Symbol::new(&env, "on_bot_moved"),
+                    &soroban_sdk::Symbol::new(env, "on_bot_moved"),
                     args,
                 );
             }
         }
 
         env.events()
-            .publish((symbol_short!("transfer"), from, to.clone()), bot_id);
+            .publish((symbol_short!("transfer"), from.clone(), to.clone()), bot_id);
         Ok(())
     }
 
@@ -2695,5 +2905,186 @@ mod overflow_tests {
         });
         assert_eq!(client.mint_basic(&user), u64::MAX - 1);
         assert_eq!(client.next_id(), u64::MAX);
+    }
+}
+
+// ── Issue #382: Approval and Operator Model Tests ────────────────────────
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+    use automint_testutils::{deploy_all, register_user};
+    use soroban_sdk::{testutils::Address as _, Env};
+
+    fn setup() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        BotNFTContractClient<'static>,
+    ) {
+        let deployment = deploy_all(Env::default());
+        let client = BotNFTContractClient::new(&deployment.env, &deployment.bot_nft_id);
+        (
+            deployment.env,
+            deployment.admin,
+            deployment.registry_id,
+            deployment.token_id,
+            client,
+        )
+    }
+
+    #[test]
+    fn test_approve_and_get_approved() {
+        let (env, _admin, registry, _token, client) = setup();
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+        register_user(&env, &registry, &owner, "owner");
+
+        let bot_id = client.mint_basic(&owner);
+        assert_eq!(client.get_approved(&bot_id), None);
+
+        // Approve spender until ledger 1000
+        client.approve(&owner, &spender, &bot_id, &1000);
+        assert_eq!(client.get_approved(&bot_id), Some(spender));
+    }
+
+    #[test]
+    fn test_approve_rejects_non_owner() {
+        let (env, _admin, registry, _token, client) = setup();
+        let owner = Address::generate(&env);
+        let non_owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+        register_user(&env, &registry, &owner, "owner");
+
+        let bot_id = client.mint_basic(&owner);
+        assert_eq!(
+            client.try_approve(&non_owner, &spender, &bot_id, &1000),
+            Err(Ok(BotNFTError::NotOwner))
+        );
+    }
+
+    #[test]
+    fn test_transfer_from_approved_spender_once_and_clears_approval() {
+        let (env, _admin, registry, _token, client) = setup();
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        register_user(&env, &registry, &owner, "owner");
+        register_user(&env, &registry, &recipient, "recipient");
+
+        let bot_id = client.mint_basic(&owner);
+        client.approve(&owner, &spender, &bot_id, &1000);
+
+        // Spender moves the bot
+        client.transfer_from(&spender, &owner, &recipient, &bot_id);
+        assert_eq!(client.get_bot(&bot_id).owner, recipient);
+
+        // Single-token approval is cleared
+        assert_eq!(client.get_approved(&bot_id), None);
+
+        // Spender cannot move the bot a second time
+        let recipient2 = Address::generate(&env);
+        register_user(&env, &registry, &recipient2, "recipient2");
+        assert_eq!(
+            client.try_transfer_from(&spender, &recipient, &recipient2, &bot_id),
+            Err(Ok(BotNFTError::NotApproved))
+        );
+    }
+
+    #[test]
+    fn test_operator_approval_can_move_multiple_bots_and_persists() {
+        let (env, _admin, registry, _token, client) = setup();
+        let owner = Address::generate(&env);
+        let operator = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        register_user(&env, &registry, &owner, "owner");
+        register_user(&env, &registry, &recipient, "recipient");
+
+        let bot1 = client.mint_basic(&owner);
+        let bot2 = client.admin_mint(&owner, &BotTier::Bronze);
+
+        assert!(!client.is_approved_for_all(&owner, &operator));
+        client.set_approval_for_all(&owner, &operator, &true);
+        assert!(client.is_approved_for_all(&owner, &operator));
+
+        // Operator transfers first bot
+        client.transfer_from(&operator, &owner, &recipient, &bot1);
+        assert_eq!(client.get_bot(&bot1).owner, recipient);
+
+        // Operator transfers second bot
+        client.transfer_from(&operator, &owner, &recipient, &bot2);
+        assert_eq!(client.get_bot(&bot2).owner, recipient);
+
+        // Operator approval is still intact
+        assert!(client.is_approved_for_all(&owner, &operator));
+    }
+
+    #[test]
+    fn test_operator_approval_revocation() {
+        let (env, _admin, registry, _token, client) = setup();
+        let owner = Address::generate(&env);
+        let operator = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        register_user(&env, &registry, &owner, "owner");
+
+        let bot_id = client.mint_basic(&owner);
+        client.set_approval_for_all(&owner, &operator, &true);
+        client.set_approval_for_all(&owner, &operator, &false);
+        assert!(!client.is_approved_for_all(&owner, &operator));
+
+        assert_eq!(
+            client.try_transfer_from(&operator, &owner, &recipient, &bot_id),
+            Err(Ok(BotNFTError::NotApproved))
+        );
+    }
+
+    #[test]
+    fn test_expired_single_token_approval_fails() {
+        let (env, _admin, registry, _token, client) = setup();
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        register_user(&env, &registry, &owner, "owner");
+
+        let bot_id = client.mint_basic(&owner);
+        let curr_seq = env.ledger().sequence();
+        let exp_seq = curr_seq + 5;
+        client.approve(&owner, &spender, &bot_id, &exp_seq);
+
+        // Advance ledger past expiration
+        automint_testutils::advance_ledger(&env, 10);
+        assert_eq!(client.get_approved(&bot_id), None);
+
+        assert_eq!(
+            client.try_transfer_from(&spender, &owner, &recipient, &bot_id),
+            Err(Ok(BotNFTError::ApprovalExpired))
+        );
+    }
+
+    #[test]
+    fn test_direct_transfer_clears_single_token_approval() {
+        let (env, _admin, registry, _token, client) = setup();
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        register_user(&env, &registry, &owner, "owner");
+        register_user(&env, &registry, &new_owner, "new_owner");
+
+        let bot_id = client.mint_basic(&owner);
+        client.approve(&owner, &spender, &bot_id, &1000);
+        assert_eq!(client.get_approved(&bot_id), Some(spender));
+
+        // Owner transfers directly
+        client.transfer(&bot_id, &owner, &new_owner);
+        assert_eq!(client.get_bot(&bot_id).owner, new_owner);
+        // Approval must be cleared
+        assert_eq!(client.get_approved(&bot_id), None);
+    }
+
+    #[test]
+    fn test_is_approved_for_all_owner_is_always_true() {
+        let (env, _admin, _registry, _token, client) = setup();
+        let owner = Address::generate(&env);
+        assert!(client.is_approved_for_all(&owner, &owner));
     }
 }

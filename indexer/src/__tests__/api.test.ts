@@ -105,6 +105,24 @@ describe("aggregate API", () => {
     expect(body.events[0].ledger).toBe(5008); // newest first
   });
 
+  it("GET /api/events preserves full-width listing IDs as decimal strings", async () => {
+    const listingId = 18_446_744_073_709_551_615n;
+    const raw = makeRawEvent({
+      contractId: CMAR,
+      topics: [sym("listed"), addr(G1), u64(listingId)],
+      value: vec([u64(1), i128(999)]),
+      ledger: 6000,
+    });
+    db.insertEvents([decoder.decode(raw)]);
+
+    const res = await fetch(`${base}/api/events`);
+    const body = await res.json();
+    expect(JSON.parse(body.events[0].topics_json)).toEqual([
+      G1,
+      listingId.toString(),
+    ]);
+  });
+
   it("GET / serves the ops dashboard HTML", async () => {
     seed();
     const res = await fetch(`${base}/`);

@@ -47,7 +47,12 @@ export function jsonParse(text: string): unknown {
 /** Normalize a scalar that may be number | bigint | string into a decimal string. */
 export function toDecimal(value: unknown): string {
   if (typeof value === "bigint") return value.toString();
-  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(0);
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) {
+      throw new RangeError(`value is not a safe integer: ${value}`);
+    }
+    return String(value);
+  }
   if (typeof value === "string") return value.trim();
   if (typeof value === "boolean") return value ? "1" : "0";
   return String(value ?? "0");
@@ -55,8 +60,11 @@ export function toDecimal(value: unknown): string {
 
 /** Normalize to a non-negative safe integer (for u32/u64 counts/ids). */
 export function toNum(value: unknown): number {
-  if (typeof value === "bigint") return Number(value);
-  return Number(value ?? 0);
+  const number = typeof value === "bigint" ? Number(value) : Number(value ?? 0);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new RangeError(`value is not a non-negative safe integer: ${String(value)}`);
+  }
+  return number;
 }
 
 /** Does a decoded first topic look like a symbol/string event name? */

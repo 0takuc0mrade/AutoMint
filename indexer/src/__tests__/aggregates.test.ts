@@ -106,6 +106,27 @@ describe("IndexerDb aggregates", () => {
     expect(db.floorPrice()).toBe("600");
   });
 
+  it("keeps distinct full-width listing IDs distinct in SQLite", () => {
+    const firstId = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+    const secondId = firstId + 1n;
+    insert(CMAR, [sym("listed"), addr(G1), u64(firstId)], vec([u64(firstId), i128(600)]), 1);
+    insert(CMAR, [sym("listed"), addr(G1), u64(secondId)], vec([u64(secondId), i128(900)]), 2);
+
+    const rows = db.raw
+      .prepare("SELECT listing_id, typeof(listing_id) AS storage_type FROM listings ORDER BY rowid")
+      .all() as { listing_id: string; storage_type: string }[];
+    expect(rows).toEqual([
+      { listing_id: firstId.toString(), storage_type: "text" },
+      { listing_id: secondId.toString(), storage_type: "text" },
+    ]);
+    expect(db.countActiveListings()).toBe(2);
+
+    insert(CMAR, [sym("cancelled"), addr(G1), u64(firstId)], u64(firstId), 3);
+    expect(db.countActiveListings()).toBe(1);
+    expect(db.raw.prepare("SELECT status FROM listings WHERE listing_id = ?").get(firstId.toString()))
+      .toEqual({ status: "cancelled" });
+  });
+
   it("rejects events from failed contract calls at the DB layer is not needed — poller filters", () => {
     // The poller filters inSuccessfulContractCall; here we just confirm the
     // insert path accepts events regardless and counts them.

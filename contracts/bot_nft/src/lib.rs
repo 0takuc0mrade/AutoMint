@@ -152,6 +152,12 @@ pub struct ApprovalEntry {
     /// The ledger sequence number at or after which this approval expires.
     /// Set to `u32::MAX` to indicate no expiry within the contract's lifetime.
     pub expiration_ledger: u32,
+    /// Total supply of all bots (maintained on mint/burn, never transfer)
+    Supply,
+    /// Base URI for token metadata
+    BaseUri,
+    /// Count of failed registry syncs
+    RegistryFailCount,
 }
 
 #[contracterror]
@@ -783,6 +789,10 @@ impl BotNFTContract {
             LEDGER_BUMP,
         );
 
+        // Decrement total supply (issue #384)
+        let total = Self::total_supply(env.clone()).saturating_sub(1);
+        env.storage().instance().set(&DataKey::Supply, &total);
+
         env.storage().persistent().remove(&DataKey::Bot(bot_id));
 
         Self::remove_bot_from_user(&env, &owner, bot_id);
@@ -939,6 +949,61 @@ impl BotNFTContract {
     /// Off-chain verifiable descriptor. The traits are derived deterministically
     /// from sha256(bot_id, minted_at, owner); this URI exposes the derivation
     /// inputs so anyone can recompute `variant`/`bonus_bps` and confirm rarity.
+    // ─── Issue #384: Supply tracking ───────────────────────────────────
+
+    /// Total supply of all bots (minted minus burned).
+    pub fn total_supply(env: Env) -> u64 {
+        env.storage().instance().get(&DataKey::Supply).unwrap_or(0)
+    }
+
+    /// Supply of bots for a specific tier.
+    pub fn tier_supply(env: Env, tier: BotTier) -> u64 {
+        env.storage().instance().get(&DataKey::TierSupply(tier)).unwrap_or(0)
+    }
+
+    // ─── Issue #381: Token metadata / URI ────────────────────────────────
+
+    /// Set the base URI for token metadata (admin only).
+    pub fn set_base_uri(env: Env, base_uri: String) -> Result<(), BotNFTError> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(BotNFTError::NotInitialized)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::BaseUri, &base_uri);
+        env.events().publish((symbol_short!("base_uri"),), (admin, base_uri));
+        Ok(())
+    }
+
+    /// Get the current base URI.
+    pub fn base_uri(env: Env) -> Result<String, BotNFTError> {
+        env.storage().instance().get(&DataKey::BaseUri).ok_or(BotNFTError::NotFound)
+    }
+
+    /// Collection metadata: name, symbol, and base URI.
+    pub fn collection_metadata(env: Env) -> Result<(String, String, String), BotNFTError> {
+        let base = env.storage().instance().get(&DataKey::BaseUri).unwrap_or(String::from(&env, ""));
+        Ok((String::from(&env, "AutoMint Bot"), String::from(&env, "BOT"), base))
+    }
+
+    // ─── Issue #387: Registry management ─────────────────────────────────
+
+    /// Get the current registry address.
+    pub fn registry(env: Env) -> Result<Address, BotNFTError> {
+        env.storage().instance().get(&DataKey::Registry).ok_or(BotNFTError::NotFound)
+    }
+
+    /// Set the registry address (admin only).
+    pub fn set_registry(env: Env, registry: Address) -> Result<(), BotNFTError> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(BotNFTError::NotInitialized)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Registry, &registry);
+        env.events().publish((symbol_short!("registry"),), (admin, registry));
+        Ok(())
+    }
+
+    /// Count of failed registry syncs.
+    pub fn registry_fail_count(env: Env) -> u64 {
+        env.storage().instance().get(&DataKey::RegistryFailCount).unwrap_or(0)
+    }
+
     pub fn token_uri(env: Env, bot_id: u64) -> Result<String, BotNFTError> {
         let bot: BotNFT = Self::get_bot(env.clone(), bot_id)?;
         let owner_str = bot.owner.to_string();
@@ -1203,6 +1268,7 @@ impl BotNFTContract {
         let registry: Address = match env.storage().instance().get(&DataKey::Registry) {
             Some(r) => r,
             None => {
+                Self::bump_registry_fail_count(env);
                 env.events().publish(
                     (symbol_short!("regfail"), user.clone()),
                     (bot_id, symbol_short!("unset")),
@@ -1214,11 +1280,18 @@ impl BotNFTContract {
         // Use the fallible client so a registry-side error (e.g. the owner is
         // not registered yet) is swallowed rather than panicking the flow (#399).
         if reg_client.try_increment_bot_count(user).is_err() {
+            Self::bump_registry_fail_count(env);
             env.events().publish(
                 (symbol_short!("regfail"), user.clone()),
                 (bot_id, symbol_short!("incfail")),
             );
         }
+    }
+
+    /// Increment the registry failure counter (issue #387).
+    fn bump_registry_fail_count(env: &Env) {
+        let count: u64 = env.storage().instance().get(&DataKey::RegistryFailCount).unwrap_or(0);
+        env.storage().instance().set(&DataKey::RegistryFailCount, &(count + 1));
     }
 
     fn decrement_bot_count(env: &Env, user: &Address, bot_id: u64) {

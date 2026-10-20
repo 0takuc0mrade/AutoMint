@@ -95,20 +95,31 @@
         ["Users", fmt(s.users)],
         ["Claims", fmt(s.total_claims)],
         ["AMT minted", fmt(s.amt_minted), true],
-        ["Volume", fmt(s.volume), true],
-        ["Floor price", fmt(s.floor_price), true],
         ["Active listings", fmt(s.active_listings)],
         ["Latest ledger", fmt(s.latest_ledger)],
       ];
+      // Prices are only comparable within one currency, so each market gets its own cards.
+      for (const m of s.markets || []) {
+        const name = shortAddr(m.currency);
+        cards.push([`Volume (${name})`, fmt(m.volume), true]);
+        cards.push([`Floor (${name})`, fmt(m.floor_price), true]);
+      }
       $("cards").innerHTML = cards.map(([label, value, small]) =>
-        `<div class="card"><div class="label">${label}</div><div class="value${small ? " small" : ""}">${value}</div></div>`
+        `<div class="card"><div class="label">${escapeHtml(label)}</div><div class="value${small ? " small" : ""}">${value}</div></div>`
       ).join("");
     }
 
+    function shortAddr(address) {
+      return address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
+    }
+
     function renderDaily(rows) {
-      $("daily").querySelector("tbody").innerHTML = rows.map(r =>
-        `<tr><td>${r.day}</td><td>${r.claims}</td><td>${r.amt_minted}</td><td>${r.volume}</td></tr>`
-      ).join("");
+      $("daily").querySelector("tbody").innerHTML = rows.map(r => {
+        const volumes = Object.entries(r.volume_by_currency || {})
+          .map(([currency, amount]) => `${shortAddr(currency)}: ${amount}`)
+          .join("<br>") || "0";
+        return `<tr><td>${r.day}</td><td>${r.claims}</td><td>${r.amt_minted}</td><td>${volumes}</td></tr>`;
+      }).join("");
     }
 
     function renderEvents(events) {

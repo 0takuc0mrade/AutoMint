@@ -73,9 +73,15 @@ new admin — same event name, different contracts.
 
 | Event | Topics (after name) | Data | Emitted in |
 |-------|---------------------|------|-----------|
-| `listed` | `[seller: Address, listing_id: u64]` | `(bot_id: u64, price: i128)` | `list_bot()` |
-| `cancelled` | `[seller: Address, listing_id: u64]` | `bot_id: u64` | `cancel_listing()` |
-| `bought` | `[buyer: Address, listing_id: u64]` | `(bot_id: u64, price: i128)` | `buy_bot()` |
+| `listed` | `[seller: Address, listing_id: u64]` | `(bot_id: u64, price: i128, currency: Address)` | `list_bot()` |
+| `price_upd` | `[seller: Address, listing_id: u64]` | `(old_price: i128, new_price: i128)` | `update_price()` |
+| `sold` | `[seller: Address, buyer: Address]` | `(listing_id: u64, bot_id: u64, price: i128, currency: Address)` | `buy_bot()` |
+| `cancel` | `[seller: Address, listing_id: u64]` | `bot_id: u64` | `cancel_listing()` |
+| `reclaimed` | `[seller: Address, listing_id: u64]` | `bot_id: u64` | `reclaim_expired()` |
+| `deactive` | `[bot_id: u64]` | `listing_id: u64` | `on_bot_moved()` (bot transferred out of escrow) |
+
+`listed` and `sold` carry the listing's `currency` so volume and floor price
+are kept per currency. Prices in different tokens are never summed.
 
 ## Token (AMT) contract
 
@@ -94,8 +100,8 @@ new admin — same event name, different contracts.
 | Users | registry `register` | distinct `user` address |
 | Claims | accrual `claim` | count of `claim` events (optionally per day) |
 | AMT minted | token `mint` | Σ `amount` (i128) |
-| Volume | marketplace `bought` | Σ `price` (i128) |
-| Floor price | marketplace `listed`/`bought`/`cancelled` | min `price` over listings whose latest event is `listed` (status `active`) |
+| Volume (per currency) | marketplace `sold` | Σ `price` (i128), grouped by `currency` |
+| Floor price (per currency) | marketplace `listed`/`price_upd`/`sold`/`cancel`/`reclaimed`/`deactive` | min `price` over listings with status `active`, grouped by `currency` |
 
 ## Known limitations & unresolved dependencies (AM-030/AM-053/AM-099/AM-124)
 
@@ -114,11 +120,11 @@ Assumptions made in place of the missing ticket context:
   in this document. A full audit against every `env.events().publish` call in
   the contract sources was performed and matched.
 - **AM-099 (unknown — possibly listing metadata):** the marketplace `listed`
-  event does **not** include `bot_tier` or `currency`; the indexer stores
-  `bot_tier = NULL` in the `listings` table. If AM-099 adds tier/currency to
-  the event, extend `insertListingStmt` in `indexer/src/db.ts`.
+  event does **not** include `bot_tier`; the indexer stores `bot_tier = NULL`
+  in the `listings` table. `currency` is now part of `listed` and `sold`.
 - **AM-124 (unknown):** unresolved; assumed no fee fields are emitted. Note
-  that the marketplace `bought` event carries only `(bot_id, price)` — the
+  that the marketplace `sold` event carries only `(listing_id, bot_id, price,
+  currency)` — the
   2.5% fee and seller payment are **not** in the event, so the "fee bug"
   question (AM-006) **cannot** be answered from events alone today. Confirming
   whether AM-124 adds fee fields (or whether the fee should be computed from

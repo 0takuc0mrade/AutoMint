@@ -4,7 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { IndexerDb } from "../db.js";
-import { G1 } from "./helpers.js";
+import { makeDecoder } from "../events.js";
+import {
+  G1,
+  G2,
+  CMAR,
+  CTOK,
+  addr,
+  i128,
+  makeRawEvent,
+  sym,
+  testConfig,
+  u64,
+  vec,
+} from "./helpers.js";
 
 describe("IndexerDb migrations", () => {
   let directory: string | undefined;
@@ -15,6 +28,60 @@ describe("IndexerDb migrations", () => {
     db = undefined;
     if (directory) rmSync(directory, { recursive: true, force: true });
     directory = undefined;
+  });
+
+  it("rebuilds marketplace volume and listing state from events for pre-v2 databases", () => {
+    directory = mkdtempSync(join(tmpdir(), "automint-indexer-migration-"));
+    const databasePath = join(directory, "indexer.sqlite");
+    const decoder = makeDecoder(testConfig());
+    const insert = (
+      seq: number,
+      topics: ReturnType<typeof sym>[],
+      value: Parameters<typeof makeRawEvent>[0]["value"],
+    ) =>
+      decoder.decode(
+        makeRawEvent({
+          contractId: CMAR,
+          topics,
+          value,
+          ledger: 100 + seq,
+          seq,
+          closedAt: new Date().toISOString(),
+        }),
+      );
+
+    const first = new IndexerDb(databasePath);
+    first.insertEvents([
+      insert(
+        1,
+        [sym("listed"), addr(G1), u64(1)],
+        vec([u64(10), i128(500), addr(CTOK)]),
+      ),
+      insert(
+        2,
+        [sym("sold"), addr(G1), addr(G2)],
+        vec([u64(1), u64(10), i128(500), addr(CTOK)]),
+      ),
+      insert(
+        3,
+        [sym("listed"), addr(G1), u64(2)],
+        vec([u64(11), i128(800), addr(CTOK)]),
+      ),
+    ]);
+    // Reproduce the state written by the version-1 indexer: a single mixed
+    // volume total, no schema stamp, and listings never closed by `sold`.
+    first.raw.prepare("DELETE FROM aggregates WHERE key = 'marketplace_schema'").run();
+    first.raw
+      .prepare("UPDATE aggregates SET value = '999' WHERE key = ?")
+      .run(`marketplace_volume:${CTOK}`);
+    first.raw.prepare("UPDATE listings SET status = 'active' WHERE listing_id = '1'").run();
+    first.close();
+
+    db = new IndexerDb(databasePath);
+    expect(db.volumeByCurrency()).toEqual({ [CTOK]: "500" });
+    expect(db.summary().markets).toEqual([
+      { currency: CTOK, volume: "500", floor_price: "800", active_listings: 1 },
+    ]);
   });
 
   it("rebuilds legacy listing state from exact marketplace event identifiers", () => {
@@ -64,7 +131,7 @@ describe("IndexerDb migrations", () => {
     const events = [
       ["listed", firstId],
       ["listed", secondId],
-      ["cancelled", firstId],
+      ["cancel", firstId],
     ] as const;
     events.forEach(([eventName, listingId], index) => {
       insertEvent.run(

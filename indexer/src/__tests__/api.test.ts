@@ -53,9 +53,13 @@ function seed(): void {
       [CACC, [sym("claim"), addr(G1)], vec([u64(200), u64(0)])],
       [CTOK, [sym("mint"), addr(G1)], i128(500)],
       [CTOK, [sym("mint"), addr(G2)], i128(250)],
-      [CMAR, [sym("listed"), addr(G1), u64(1)], vec([u64(10), i128(999)])],
-      [CMAR, [sym("bought"), addr(G2), u64(1)], vec([u64(10), i128(999)])],
-      [CMAR, [sym("listed"), addr(G1), u64(2)], vec([u64(11), i128(777)])],
+      [CMAR, [sym("listed"), addr(G1), u64(1)], vec([u64(10), i128(999), addr(CTOK)])],
+      [
+        CMAR,
+        [sym("sold"), addr(G1), addr(G2)],
+        vec([u64(1), u64(10), i128(999), addr(CTOK)]),
+      ],
+      [CMAR, [sym("listed"), addr(G1), u64(2)], vec([u64(11), i128(777), addr(CTOK)])],
     ];
     const [cid, topics, value] = cases[seq];
     return makeRawEvent({
@@ -82,8 +86,9 @@ describe("aggregate API", () => {
     expect(body.users).toBe(2);
     expect(body.total_claims).toBe(2);
     expect(body.amt_minted).toBe("750");
-    expect(body.volume).toBe("999");
-    expect(body.floor_price).toBe("777");
+    expect(body.markets).toEqual([
+      { currency: CTOK, volume: "999", floor_price: "777", active_listings: 1 },
+    ]);
     expect(body.active_listings).toBe(1);
     expect(body.latest_ledger).toBe(5008);
   });
@@ -96,7 +101,7 @@ describe("aggregate API", () => {
     const last = body.rows[body.rows.length - 1];
     expect(last.claims).toBe(2);
     expect(last.amt_minted).toBe("750");
-    expect(last.volume).toBe("999");
+    expect(last.volume_by_currency).toEqual({ [CTOK]: "999" });
   });
 
   it("GET /api/events returns seeded events newest-first", async () => {

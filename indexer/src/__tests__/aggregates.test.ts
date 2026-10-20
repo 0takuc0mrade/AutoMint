@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { IndexerDb } from "../db.js";
 import { decodeRawEvent, makeDecoder } from "../events.js";
-import type { DecodedEvent } from "../types.js";
+import type { DecodedEvent, MarketSummary } from "../types.js";
 import {
   G1,
   G2,
@@ -49,6 +49,30 @@ function insert(
   db.insertEvents([decoder.decode(raw)]);
 }
 
+/** Marketplace events, built to the payload shapes in docs/EVENTS.md. */
+function list(seq: number, listingId: bigint, botId: bigint, price: bigint, currency: string) {
+  insert(
+    CMAR,
+    [sym("listed"), addr(G1), u64(listingId)],
+    vec([u64(botId), i128(price), addr(currency)]),
+    seq,
+  );
+}
+
+function sold(seq: number, listingId: bigint, botId: bigint, price: bigint, currency: string) {
+  insert(
+    CMAR,
+    [sym("sold"), addr(G1), addr(G2)],
+    vec([u64(listingId), u64(botId), i128(price), addr(currency)]),
+    seq,
+  );
+}
+
+/** Markets keyed by currency, so assertions don't depend on sort order. */
+function marketsByCurrency(): Record<string, MarketSummary> {
+  return Object.fromEntries(db.summary().markets.map((m) => [m.currency, m]));
+}
+
 describe("IndexerDb aggregates", () => {
   it("counts users, claims, mints; sums AMT + volume; tracks listings/floor price", () => {
     // Two users register (G1 twice — must count once).
@@ -64,35 +88,21 @@ describe("IndexerDb aggregates", () => {
     insert(CTOK, [sym("mint"), addr(G1)], i128(1000), 6);
     insert(CTOK, [sym("mint"), addr(G2)], i128(250), 7);
 
-    // Two listings: 500 and 1000.
-    insert(
-      CMAR,
-      [sym("listed"), addr(G1), u64(1)],
-      vec([u64(10), i128(500)]),
-      8,
-    );
-    insert(
-      CMAR,
-      [sym("listed"), addr(G1), u64(2)],
-      vec([u64(11), i128(1000)]),
-      9,
-    );
+    // Two listings in the same currency: 500 and 1000.
+    list(8, 1n, 10n, 500n, CTOK);
+    list(9, 2n, 11n, 1000n, CTOK);
 
-    // Buy listing 1 (price 500).
-    insert(
-      CMAR,
-      [sym("bought"), addr(G2), u64(1)],
-      vec([u64(10), i128(500)]),
-      10,
-    );
+    // Sell listing 1 (price 500).
+    sold(10, 1n, 10n, 500n, CTOK);
 
     const s = db.summary();
     expect(s.users).toBe(2);
     expect(s.total_claims).toBe(2);
     expect(s.total_mints).toBe(2);
     expect(s.amt_minted).toBe("1250");
-    expect(s.volume).toBe("500");
-    expect(s.floor_price).toBe("1000");
+    expect(s.markets).toEqual([
+      { currency: CTOK, volume: "500", floor_price: "1000", active_listings: 1 },
+    ]);
     expect(s.active_listings).toBe(1);
     expect(s.latest_ledger).toBe(0); // no checkpoint saved yet
   });
@@ -106,12 +116,13 @@ describe("IndexerDb aggregates", () => {
 
   it("reads summary totals from constant-size aggregate rows", () => {
     insert(CTOK, [sym("mint"), addr(G1)], i128(100), 1);
-    insert(CMAR, [sym("bought"), addr(G2), u64(1)], vec([u64(1), i128(75)]), 2);
+    list(2, 1n, 1n, 75n, CTOK);
+    sold(3, 1n, 1n, 75n, CTOK);
 
     db.raw.prepare("DELETE FROM events").run();
 
     expect(db.sumAmtMinted()).toBe("100");
-    expect(db.sumVolume()).toBe("75");
+    expect(db.volumeByCurrency()).toEqual({ [CTOK]: "75" });
   });
 
   it("does not double-count aggregate totals when an event is replayed", () => {
@@ -134,54 +145,79 @@ describe("IndexerDb aggregates", () => {
     insert(CACC, [sym("claim"), addr(G1)], vec([u64(1500), u64(0)]), 1);
     insert(CACC, [sym("claim"), addr(G1)], vec([u64(900), u64(0)]), 2);
     insert(CTOK, [sym("mint"), addr(G1)], i128(1000), 3);
-    insert(
-      CMAR,
-      [sym("bought"), addr(G2), u64(5)],
-      vec([u64(10), i128(777)]),
-      4,
-    );
+    list(4, 5n, 10n, 777n, CTOK);
+    sold(5, 5n, 10n, 777n, CTOK);
 
     const rows = db.daily(7);
     const todayRow = rows[rows.length - 1];
     expect(todayRow.claims).toBe(2);
     expect(todayRow.amt_minted).toBe("1000");
-    expect(todayRow.volume).toBe("777");
+    expect(todayRow.volume_by_currency).toEqual({ [CTOK]: "777" });
   });
 
   it("tracks listing lifecycle through cancel", () => {
-    insert(
-      CMAR,
-      [sym("listed"), addr(G1), u64(7)],
-      vec([u64(20), i128(600)]),
-      1,
-    );
-    insert(
-      CMAR,
-      [sym("listed"), addr(G1), u64(8)],
-      vec([u64(21), i128(900)]),
-      2,
-    );
-    insert(CMAR, [sym("cancelled"), addr(G1), u64(8)], u64(21), 3);
+    list(1, 7n, 20n, 600n, CTOK);
+    list(2, 8n, 21n, 900n, CTOK);
+    insert(CMAR, [sym("cancel"), addr(G1), u64(8)], u64(21), 3);
 
     expect(db.countActiveListings()).toBe(1);
-    expect(db.floorPrice()).toBe("600");
+    expect(db.floorPriceByCurrency().get(CTOK)).toBe("600");
+  });
+
+  it("applies price updates, reclaims and deactivations to derived state", () => {
+    list(1, 1n, 10n, 600n, CTOK);
+    insert(
+      CMAR,
+      [sym("price_upd"), addr(G1), u64(1)],
+      vec([i128(600), i128(650)]),
+      2,
+    );
+    list(3, 2n, 11n, 900n, CTOK);
+    // The bot in listing 2 was moved out of the marketplace.
+    insert(CMAR, [sym("deactive"), u64(11)], u64(2), 4);
+    list(5, 3n, 12n, 700n, CTOK);
+    insert(CMAR, [sym("reclaimed"), addr(G1), u64(3)], u64(12), 6);
+
+    expect(db.countActiveListings()).toBe(1);
+    expect(db.floorPriceByCurrency().get(CTOK)).toBe("650");
+    expect(
+      db.raw
+        .prepare("SELECT listing_id, status FROM listings ORDER BY listing_id")
+        .all(),
+    ).toEqual([
+      { listing_id: "1", status: "active" },
+      { listing_id: "2", status: "deactivated" },
+      { listing_id: "3", status: "reclaimed" },
+    ]);
+  });
+
+  it("keeps volume and floor separate for each currency", () => {
+    list(1, 1n, 10n, 500n, CTOK);
+    list(2, 2n, 11n, 100n, CBOT);
+    list(3, 3n, 12n, 300n, CTOK);
+    sold(4, 2n, 11n, 100n, CBOT);
+
+    const markets = marketsByCurrency();
+    expect(markets[CBOT]).toEqual({
+      currency: CBOT,
+      volume: "100",
+      floor_price: null,
+      active_listings: 0,
+    });
+    expect(markets[CTOK]).toEqual({
+      currency: CTOK,
+      volume: "0",
+      floor_price: "300",
+      active_listings: 2,
+    });
+    expect(db.summary().active_listings).toBe(2);
   });
 
   it("keeps distinct full-width listing IDs distinct in SQLite", () => {
     const firstId = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
     const secondId = firstId + 1n;
-    insert(
-      CMAR,
-      [sym("listed"), addr(G1), u64(firstId)],
-      vec([u64(firstId), i128(600)]),
-      1,
-    );
-    insert(
-      CMAR,
-      [sym("listed"), addr(G1), u64(secondId)],
-      vec([u64(secondId), i128(900)]),
-      2,
-    );
+    list(1, firstId, firstId, 600n, CTOK);
+    list(2, secondId, secondId, 900n, CTOK);
 
     const rows = db.raw
       .prepare(
@@ -194,7 +230,7 @@ describe("IndexerDb aggregates", () => {
     ]);
     expect(db.countActiveListings()).toBe(2);
 
-    insert(CMAR, [sym("cancelled"), addr(G1), u64(firstId)], u64(firstId), 3);
+    insert(CMAR, [sym("cancel"), addr(G1), u64(firstId)], u64(firstId), 3);
     expect(db.countActiveListings()).toBe(1);
     expect(
       db.raw

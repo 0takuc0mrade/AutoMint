@@ -1941,6 +1941,135 @@ fn test_bot_nft_getter() {
     assert_eq!(h.mkt.bot_nft(), h.bot.address);
 }
 
+// ── #912: rotating the bot NFT address vs escrowed listings ───────────────
+
+#[test]
+fn set_bot_nft_is_rejected_while_a_listing_holds_a_bot() {
+    let h = setup();
+    let seller = Address::generate(&h.env);
+    let bot_id = h.bot.mint_basic(&seller);
+    let listing_id = h.mkt.list_bot(
+        &seller,
+        &bot_id,
+        &50_0000000_i128,
+        &h.token.address,
+        &604_800_u64,
+    );
+    let (new_bot_nft, _) = deploy_bot_nft_with_registry(&h.env, &h.admin, &h.registry.address);
+
+    let result = h.mkt.try_set_bot_nft(&new_bot_nft);
+    assert_eq!(result, Err(Ok(MarketplaceError::ActiveListingsExist)));
+    assert_eq!(h.mkt.bot_nft(), h.bot.address);
+
+    // The escrowed bot still settles through the original contract.
+    h.mkt.cancel_listing(&seller, &listing_id);
+    assert_eq!(h.bot.get_bot(&bot_id).owner, seller);
+}
+
+#[test]
+fn set_bot_nft_succeeds_once_every_listing_has_settled() {
+    let h = setup();
+    let seller = Address::generate(&h.env);
+    let buyer = Address::generate(&h.env);
+    let cancelled_bot = h.bot.mint_basic(&seller);
+    let sold_bot = h.bot.mint_basic(&seller);
+    let cancelled = h.mkt.list_bot(
+        &seller,
+        &cancelled_bot,
+        &50_0000000_i128,
+        &h.token.address,
+        &604_800_u64,
+    );
+    let sold = h.mkt.list_bot(
+        &seller,
+        &sold_bot,
+        &50_0000000_i128,
+        &h.token.address,
+        &604_800_u64,
+    );
+    h.token.mint(&buyer, &50_0000000_i128);
+    h.mkt.buy_bot(&buyer, &sold);
+
+    // One listing is still escrowing a bot, so rotation stays blocked.
+    let (new_bot_nft, _) = deploy_bot_nft_with_registry(&h.env, &h.admin, &h.registry.address);
+    assert_eq!(
+        h.mkt.try_set_bot_nft(&new_bot_nft),
+        Err(Ok(MarketplaceError::ActiveListingsExist))
+    );
+
+    h.mkt.cancel_listing(&seller, &cancelled);
+    h.mkt.set_bot_nft(&new_bot_nft);
+    assert_eq!(h.mkt.bot_nft(), new_bot_nft);
+}
+
+// ── #911: combined fee + royalty cap on set_fee_bps ──────────────────────
+
+#[test]
+fn set_fee_bps_enforces_the_combined_fee_and_royalty_cap() {
+    let h = setup();
+    h.env.mock_all_auths();
+
+    // Fee and royalty together may use the whole 10,000 bps and no more.
+    let mkt_id = h.env.register_contract(None, MarketplaceContract);
+    let mkt = MarketplaceContractClient::new(&h.env, &mkt_id);
+    mkt.initialize(&h.admin, &h.bot.address, &100u32, &9_900u32);
+
+    mkt.set_fee_bps(&100u32);
+    assert_eq!(mkt.config().fee_bps, 100);
+    assert_eq!(
+        mkt.try_set_fee_bps(&101u32),
+        Err(Ok(MarketplaceError::InvalidPrice))
+    );
+    assert_eq!(
+        mkt.config().fee_bps,
+        100,
+        "a rejected fee update must leave the fee unchanged"
+    );
+
+    // With no royalty the fee alone may reach 10,000 bps but not exceed it.
+    h.mkt.set_fee_bps(&10_000u32);
+    assert_eq!(h.mkt.config().fee_bps, 10_000);
+    assert_eq!(
+        h.mkt.try_set_fee_bps(&10_001u32),
+        Err(Ok(MarketplaceError::InvalidPrice))
+    );
+    assert_eq!(h.mkt.config().fee_bps, 10_000);
+}
+
+// ── #910: sale and listing events identify their currency ─────────────────
+
+#[test]
+fn listed_and_sold_events_carry_the_currency() {
+    let h = setup();
+    let seller = Address::generate(&h.env);
+    let buyer = Address::generate(&h.env);
+    let bot_id = h.bot.mint_basic(&seller);
+    let price = 50_0000000_i128;
+    let listing_id = h
+        .mkt
+        .list_bot(&seller, &bot_id, &price, &h.token.address, &604_800_u64);
+
+    let events = h.env.events().all();
+    let (_, _, data) = events.last().unwrap();
+    let (listed_bot, listed_price, listed_currency): (u64, i128, Address) =
+        <(u64, i128, Address)>::try_from_val(&h.env, &data).unwrap();
+    assert_eq!(listed_bot, bot_id);
+    assert_eq!(listed_price, price);
+    assert_eq!(listed_currency, h.token.address);
+
+    h.token.mint(&buyer, &price);
+    h.mkt.buy_bot(&buyer, &listing_id);
+
+    let events = h.env.events().all();
+    let (_, _, data) = events.last().unwrap();
+    let (sold_listing, sold_bot, sold_price, sold_currency): (u64, u64, i128, Address) =
+        <(u64, u64, i128, Address)>::try_from_val(&h.env, &data).unwrap();
+    assert_eq!(sold_listing, listing_id);
+    assert_eq!(sold_bot, bot_id);
+    assert_eq!(sold_price, price);
+    assert_eq!(sold_currency, h.token.address);
+}
+
 #[test]
 fn test_per_seller_listing_limit() {
     let h = setup();

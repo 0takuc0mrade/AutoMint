@@ -250,7 +250,13 @@ export const Errors = {
   /**
    * `withdraw_fees` amount exceeds the accrued fee balance (#426).
    */
-  33: {message:"InsufficientFees"}
+  33: {message:"InsufficientFees"},
+
+  /**
+   * `set_bot_nft`: at least one listing still escrows a bot in the current
+   * bot NFT contract, so the address cannot change until they settle.
+   */
+  34: {message:"ActiveListingsExist"}
 }
 
 export interface Client {

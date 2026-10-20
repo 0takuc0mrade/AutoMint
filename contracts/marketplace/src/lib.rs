@@ -80,7 +80,9 @@
 //! address with a cheap read (checking if it responds to the bot_nft interface)
 //! and rejects an unresponsive one with `InvalidBotNft`. This prevents a
 //! permanently-broken marketplace caused by a typo in the bot_nft address.
-//! The bot_nft address is readable via `bot_nft()` getter.
+//! The bot_nft address is readable via `bot_nft()` getter. Escrowed bots and
+//! open offers settle through that address, so `set_bot_nft` is rejected with
+//! `ActiveListingsExist` while any listing is still active (#912).
 //!
 //! ## Check ordering in mutating functions (#433)
 //!
@@ -112,9 +114,9 @@
 //! - `initialized`: Emitted when contract initializes.
 //!   Topics: ("initialized",), Data: (admin, bot_nft, fee_bps)
 //! - `listed`: Emitted when a bot is listed for sale.
-//!   Topics: ("listed", seller, listing_id), Data: (bot_id, price)
+//!   Topics: ("listed", seller, listing_id), Data: (bot_id, price, currency)
 //! - `sold`: Emitted when a bot is purchased.
-//!   Topics: ("sold", seller, buyer), Data: (listing_id, bot_id, price)
+//!   Topics: ("sold", seller, buyer), Data: (listing_id, bot_id, price, currency)
 //! - `cancel`: Emitted when a listing is cancelled.
 //!   Topics: ("cancel", seller, listing_id), Data: (bot_id,)
 //! - `fee_bps_updated`: Emitted when fee basis points change.
@@ -204,6 +206,10 @@ pub enum DataKey {
     PendingAdmin,
     TierStats(BotTier),
     BotListing(u64),
+    /// Listings currently escrowing a bot (instance storage). Maintained by
+    /// `on_listing_added` / `on_listing_removed`; `set_bot_nft` refuses to
+    /// rotate the bot NFT address while it is non-zero.
+    ActiveListingCount,
     Locked,            // #326: Reentrancy guard
     AllowedCurrencies, // #325: Currency allowlist
     /// An escrowed offer by id (persistent) (#425).
@@ -337,6 +343,9 @@ pub enum MarketplaceError {
     InvalidAmount = 32,
     /// `withdraw_fees` amount exceeds the accrued fee balance (#426).
     InsufficientFees = 33,
+    /// `set_bot_nft`: at least one listing still escrows a bot in the current
+    /// bot NFT contract, so the address cannot change until they settle.
+    ActiveListingsExist = 34,
 }
 
 /// Every bot tier, in order, for per-tier reporting.
@@ -648,7 +657,7 @@ impl MarketplaceContract {
 
         env.events().publish(
             (symbol_short!("listed"), seller, listing_id),
-            (bot_id, price),
+            (bot_id, price, currency),
         );
         Self::clear_lock(&env);
         Ok(listing_id)
@@ -864,7 +873,12 @@ impl MarketplaceContract {
         Self::add_user_purchase(&env, &buyer, purchase);
         env.events().publish(
             (symbol_short!("sold"), listing.seller.clone(), buyer.clone()),
-            (listing_id, listing.bot_id, listing.price),
+            (
+                listing_id,
+                listing.bot_id,
+                listing.price,
+                listing.currency.clone(),
+            ),
         );
         Self::clear_lock(&env);
         Ok(())
@@ -1343,6 +1357,8 @@ impl MarketplaceContract {
         env.storage().instance().get(&DataKey::Config).unwrap()
     }
 
+    /// Change the platform fee. The combined `fee_bps + royalty_bps` must stay
+    /// within 10,000 basis points, as enforced by `initialize` (#911).
     pub fn set_fee_bps(env: Env, new_fee_bps: u32) -> Result<(), MarketplaceError> {
         let mut config: Config = env
             .storage()
@@ -1350,6 +1366,9 @@ impl MarketplaceContract {
             .get(&DataKey::Config)
             .ok_or(MarketplaceError::NotInitialized)?;
         config.admin.require_auth();
+        if (new_fee_bps as u64) + (config.royalty_bps as u64) > 10_000 {
+            return Err(MarketplaceError::InvalidPrice);
+        }
         let old_fee_bps = config.fee_bps;
         config.fee_bps = new_fee_bps;
         env.storage().instance().set(&DataKey::Config, &config);
@@ -1363,6 +1382,9 @@ impl MarketplaceContract {
         Ok(())
     }
 
+    /// Point the marketplace at a new bot NFT contract. Rejected with
+    /// `ActiveListingsExist` while any listing escrows a bot, because escrowed
+    /// bots are settled through the configured address (#912).
     pub fn set_bot_nft(env: Env, new_bot_nft: Address) -> Result<(), MarketplaceError> {
         let mut config: Config = env
             .storage()
@@ -1370,6 +1392,10 @@ impl MarketplaceContract {
             .get(&DataKey::Config)
             .ok_or(MarketplaceError::NotInitialized)?;
         config.admin.require_auth();
+
+        if Self::active_listing_count(&env) > 0 {
+            return Err(MarketplaceError::ActiveListingsExist);
+        }
 
         Self::probe_bot_nft(&env, &new_bot_nft)?;
 
@@ -2056,8 +2082,22 @@ impl MarketplaceContract {
             .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
     }
 
+    fn active_listing_count(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ActiveListingCount)
+            .unwrap_or(0)
+    }
+
+    fn write_active_listing_count(env: &Env, count: u32) {
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveListingCount, &count);
+    }
+
     /// A new active listing can only lower the floor: one comparison.
     fn on_listing_added(env: &Env, listing: &Listing) {
+        Self::write_active_listing_count(env, Self::active_listing_count(env).saturating_add(1));
         let mut stats = Self::read_tier_stats(env, listing.bot_tier);
         if stats.floor_price == 0 || listing.price < stats.floor_price {
             stats.floor_price = listing.price;
@@ -2069,6 +2109,7 @@ impl MarketplaceContract {
     /// Called after `listing` has left the active index (sold, cancelled,
     /// deactivated). The floor is rescanned only if this listing held it.
     fn on_listing_removed(env: &Env, listing: &Listing) {
+        Self::write_active_listing_count(env, Self::active_listing_count(env).saturating_sub(1));
         let mut stats = Self::read_tier_stats(env, listing.bot_tier);
         if stats.floor_listing_id == listing.id {
             let (price, id) = Self::scan_floor(env, listing.bot_tier);

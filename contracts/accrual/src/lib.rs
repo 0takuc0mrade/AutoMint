@@ -126,7 +126,7 @@ pub enum AccrualError {
     NotRegistered = 11,
     Frozen = 12,
     TokenConfigFailed = 13,
-    BotNftCallFailed = 13,
+    BotNftCallFailed = 14,
 }
 
 /// Error code carried by a failed cross-contract call: `0` on success, the

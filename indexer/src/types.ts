@@ -33,8 +33,11 @@ export const EVENT_NAMES = [
   "start",
   "claim",
   "listed",
-  "cancelled",
-  "bought",
+  "sold",
+  "cancel",
+  "price_upd",
+  "reclaimed",
+  "deactive",
   "approve",
   "burn",
   "set_admin",
@@ -105,14 +108,24 @@ export interface EventRow {
   recorded_at: string;
 }
 
+/**
+ * Marketplace figures for one currency. Prices are only comparable within a
+ * currency, so volume and floor are never reported across currencies.
+ */
+export interface MarketSummary {
+  currency: string;
+  volume: string;
+  floor_price: string | null;
+  active_listings: number;
+}
+
 /** Shape returned by the aggregate API. */
 export interface Summary {
   users: number;
   total_claims: number;
   total_mints: number;
   amt_minted: string;
-  volume: string;
-  floor_price: string | null;
+  markets: MarketSummary[];
   active_listings: number;
   latest_ledger: number;
   last_indexed_at: string | null;
@@ -122,5 +135,6 @@ export interface DailyRow {
   day: string;
   claims: number;
   amt_minted: string;
-  volume: string;
+  /** Sale volume per currency for the day (i128 decimal strings). */
+  volume_by_currency: Record<string, string>;
 }

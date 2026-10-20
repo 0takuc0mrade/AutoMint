@@ -4,7 +4,8 @@
  * Endpoints:
  *   GET /                  — ops dashboard (static HTML in `public/index.html`)
  *   GET /api/summary       — top-level aggregates (users, claims, AMT minted,
- *                            volume, floor price, latest ledger)
+ *                            latest ledger) and per-currency marketplace
+ *                            figures (`markets`: volume, floor price, listings)
  *   GET /api/claims/daily  — per-day claims / AMT minted / volume
  *   GET /api/events        — recent raw events (dashboard table)
  *   GET /api/health        — indexer liveness + checkpoint

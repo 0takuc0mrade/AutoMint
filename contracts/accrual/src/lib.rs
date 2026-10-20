@@ -719,13 +719,15 @@ impl AccrualContract {
             return Err(AccrualError::InvalidConfig);
         }
 
-        env.storage().instance().set(
-            &DataKey::Config,
-            &Config {
-                points_per_amt,
-                amt_scale: current_config.amt_scale,
-            },
-        );
+        // Preserve the token scale configured at initialize time (#410) while
+        // updating the points-per-AMT threshold.
+        let updated_config = Config {
+            points_per_amt,
+            amt_scale: current_config.amt_scale,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::Config, &updated_config);
 
         env.events()
             .publish((symbol_short!("cfg_upd"), admin), (old_val, points_per_amt));

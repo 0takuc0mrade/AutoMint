@@ -38,7 +38,7 @@ export const networks = {
   }
 } as const
 
-export type DataKey = {tag: "Allowance", values: readonly [AllowanceKey]} | {tag: "Balance", values: readonly [string]} | {tag: "State", values: void} | {tag: "Admin", values: void} | {tag: "TotalSupply", values: void} | {tag: "MaxSupply", values: void} | {tag: "Locked", values: readonly [string]};
+export type DataKey = {tag: "Allowance", values: readonly [AllowanceKey]} | {tag: "Balance", values: readonly [string]} | {tag: "State", values: void} | {tag: "Admin", values: void} | {tag: "TotalSupply", values: void} | {tag: "MaxSupply", values: void} | {tag: "Locked", values: readonly [string]} | {tag: "PendingAdmin", values: void};
 
 export const Errors = {
   1: {message:"AlreadyInitialized"},
@@ -63,11 +63,23 @@ export const Errors = {
 
   10: {message:"InvalidDecimals"},
 
-  11: {message:"InvalidExpiration"}
+  11: {message:"InvalidExpiration"},
+
+  12: {message:"InvalidMetadata"},
+
+  13: {message:"NoPendingAdmin"},
+
+  14: {message:"LengthMismatch"},
+
+  15: {message:"BatchTooLarge"}
 }
 
 export interface TokenState {
-  decimal: u32;
+  /**
+ * Immutable after initialization: changing precision would reprice every
+ * existing balance without changing its stored integer amount.
+ */
+decimal: u32;
   name: string;
   symbol: string;
 }
@@ -417,6 +429,8 @@ export interface Client {
 
   /**
    * Construct and simulate a set_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Proposes `new_admin` as the next administrator. The current admin
+   * remains active until the proposed address calls `accept_admin`.
    */
   set_admin: ({new_admin}: {new_admin: string}, options?: {
     /**
@@ -477,6 +491,28 @@ export interface Client {
   }) => Promise<AssembledTransaction<Option<i128>>>
 
   /**
+   * Construct and simulate a accept_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Accepts the pending admin proposal. Only the nominated address can
+   * call this method.
+   */
+  accept_admin: (options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a bump_balance transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * #345: permissionless keeper call that refreshes `id`'s balance
    * entry TTL without touching its amount. Anyone may call this — there
@@ -502,6 +538,28 @@ export interface Client {
   }) => Promise<AssembledTransaction<null>>
 
   /**
+   * Construct and simulate a set_metadata transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Updates the token's display name and symbol. Decimal precision is
+   * deliberately immutable: changing it would reprice every stored balance.
+   */
+  set_metadata: ({name, symbol}: {name: string, symbol: string}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a total_supply transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Returns the total supply of tokens (#338)
    */
@@ -521,6 +579,27 @@ export interface Client {
      */
     simulate?: boolean;
   }) => Promise<AssembledTransaction<i128>>
+
+  /**
+   * Construct and simulate a pending_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the nominated administrator, if a transfer is pending.
+   */
+  pending_admin: (options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Option<string>>>
 
   /**
    * Construct and simulate a transfer_from transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -564,6 +643,26 @@ export interface Client {
   }) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a transfer_batch transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  transfer_batch: ({from, recipients, amounts}: {from: string, recipients: Array<string>, amounts: Array<i128>}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a spendable_balance transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * #344: SEP-41 `spendable_balance` — the portion of `balance` that is
    * actually transferable right now. For this token there is currently
@@ -590,6 +689,27 @@ export interface Client {
     simulate?: boolean;
   }) => Promise<AssembledTransaction<i128>>
 
+  /**
+   * Construct and simulate a cancel_admin_transfer transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Cancels the pending admin proposal. Only the current admin can cancel.
+   */
+  cancel_admin_transfer: (options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
 }
 export class Client extends ContractClient {
   constructor(public readonly options: ContractClientOptions) {
@@ -609,19 +729,24 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAAIdHJhbnNmZXIAAAADAAAAAAAAAARmcm9tAAAAEwAAAAAAAAACdG8AAAAAABMAAAAAAAAABmFtb3VudAAAAAAACwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAClRva2VuRXJyb3IAAA==",
         "AAAAAAAAAAAAAAAJYWxsb3dhbmNlAAAAAAAAAgAAAAAAAAAEZnJvbQAAABMAAAAAAAAAB3NwZW5kZXIAAAAAEwAAAAEAAAAL",
         "AAAAAAAAAAAAAAAJYnVybl9mcm9tAAAAAAAAAwAAAAAAAAAHc3BlbmRlcgAAAAATAAAAAAAAAARmcm9tAAAAEwAAAAAAAAAGYW1vdW50AAAAAAALAAAAAQAAA+kAAAPtAAAAAAAAB9AAAAAKVG9rZW5FcnJvcgAA",
-        "AAAAAAAAAAAAAAAJc2V0X2FkbWluAAAAAAAAAQAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAClRva2VuRXJyb3IAAA==",
-        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAABwAAAAEAAAAAAAAACUFsbG93YW5jZQAAAAAAAAEAAAfQAAAADEFsbG93YW5jZUtleQAAAAEAAAAAAAAAB0JhbGFuY2UAAAAAAQAAABMAAAAAAAAAAAAAAAVTdGF0ZQAAAAAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAALVG90YWxTdXBwbHkAAAAAAAAAAAAAAAAJTWF4U3VwcGx5AAAAAAAAAQAAAAAAAAAGTG9ja2VkAAAAAAABAAAAEw==",
+        "AAAAAAAAAIFQcm9wb3NlcyBgbmV3X2FkbWluYCBhcyB0aGUgbmV4dCBhZG1pbmlzdHJhdG9yLiBUaGUgY3VycmVudCBhZG1pbgpyZW1haW5zIGFjdGl2ZSB1bnRpbCB0aGUgcHJvcG9zZWQgYWRkcmVzcyBjYWxscyBgYWNjZXB0X2FkbWluYC4AAAAAAAAJc2V0X2FkbWluAAAAAAAAAQAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAClRva2VuRXJyb3IAAA==",
+        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACAAAAAEAAAAAAAAACUFsbG93YW5jZQAAAAAAAAEAAAfQAAAADEFsbG93YW5jZUtleQAAAAEAAAAAAAAAB0JhbGFuY2UAAAAAAQAAABMAAAAAAAAAAAAAAAVTdGF0ZQAAAAAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAALVG90YWxTdXBwbHkAAAAAAAAAAAAAAAAJTWF4U3VwcGx5AAAAAAAAAQAAAAAAAAAGTG9ja2VkAAAAAAABAAAAEwAAAAAAAAAAAAAADFBlbmRpbmdBZG1pbg==",
         "AAAAAAAAAAAAAAAKaW5pdGlhbGl6ZQAAAAAABAAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAAdkZWNpbWFsAAAAAAQAAAAAAAAABG5hbWUAAAAQAAAAAAAAAAZzeW1ib2wAAAAAABAAAAABAAAD6QAAA+0AAAAAAAAH0AAAAApUb2tlbkVycm9yAAA=",
         "AAAAAAAAAClSZXR1cm5zIHRoZSBtYXggc3VwcGx5IGNhcCwgaWYgc2V0ICgjMzM5KQAAAAAAAAptYXhfc3VwcGx5AAAAAAAAAAAAAQAAA+gAAAAL",
+        "AAAAAAAAAFRBY2NlcHRzIHRoZSBwZW5kaW5nIGFkbWluIHByb3Bvc2FsLiBPbmx5IHRoZSBub21pbmF0ZWQgYWRkcmVzcyBjYW4KY2FsbCB0aGlzIG1ldGhvZC4AAAAMYWNjZXB0X2FkbWluAAAAAAAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAClRva2VuRXJyb3IAAA==",
         "AAAAAAAAAT0jMzQ1OiBwZXJtaXNzaW9ubGVzcyBrZWVwZXIgY2FsbCB0aGF0IHJlZnJlc2hlcyBgaWRgJ3MgYmFsYW5jZQplbnRyeSBUVEwgd2l0aG91dCB0b3VjaGluZyBpdHMgYW1vdW50LiBBbnlvbmUgbWF5IGNhbGwgdGhpcyDigJQgdGhlcmUKaXMgbm90aGluZyBwcml2aWxlZ2VkIGFib3V0IGV4dGVuZGluZyBhbiBlbnRyeSdzIG93biBsaWZldGltZSwgYW5kCnJlcXVpcmluZyBhdXRoIGhlcmUgd291bGQgZGVmZWF0IHRoZSBwb2ludCBvZiBhIGtlZXBlciBiZWluZyBhYmxlCnRvIHJlc2N1ZSBhIGRvcm1hbnQgaG9sZGVyJ3MgYmFsYW5jZSBmcm9tIGFyY2hpdmFsLgAAAAAAAAxidW1wX2JhbGFuY2UAAAABAAAAAAAAAAJpZAAAAAAAEwAAAAA=",
+        "AAAAAAAAAIlVcGRhdGVzIHRoZSB0b2tlbidzIGRpc3BsYXkgbmFtZSBhbmQgc3ltYm9sLiBEZWNpbWFsIHByZWNpc2lvbiBpcwpkZWxpYmVyYXRlbHkgaW1tdXRhYmxlOiBjaGFuZ2luZyBpdCB3b3VsZCByZXByaWNlIGV2ZXJ5IHN0b3JlZCBiYWxhbmNlLgAAAAAAAAxzZXRfbWV0YWRhdGEAAAACAAAAAAAAAARuYW1lAAAAEAAAAAAAAAAGc3ltYm9sAAAAAAAQAAAAAQAAA+kAAAPtAAAAAAAAB9AAAAAKVG9rZW5FcnJvcgAA",
         "AAAAAAAAAClSZXR1cm5zIHRoZSB0b3RhbCBzdXBwbHkgb2YgdG9rZW5zICgjMzM4KQAAAAAAAAx0b3RhbF9zdXBwbHkAAAAAAAAAAQAAAAs=",
-        "AAAABAAAAAAAAAAAAAAAClRva2VuRXJyb3IAAAAAAAwAAAAAAAAAEkFscmVhZHlJbml0aWFsaXplZAAAAAAAAQAAAAAAAAAOTm90SW5pdGlhbGl6ZWQAAAAAAAIAAAAAAAAADFVuYXV0aG9yaXplZAAAAAMAAAAAAAAAE0luc3VmZmljaWVudEJhbGFuY2UAAAAABAAAAAAAAAAVSW5zdWZmaWNpZW50QWxsb3dhbmNlAAAAAAAABQAAAAAAAAAOTmVnYXRpdmVBbW91bnQAAAAAAAYAAAAAAAAAEEFsbG93YW5jZUV4cGlyZWQAAAAHAAAAAAAAAAhPdmVyZmxvdwAAAAgAAAAAAAAABlBhdXNlZAAAAAAD6AAAAAAAAAARU3VwcGx5Q2FwRXhjZWVkZWQAAAAAAAAJAAAAAAAAAA9JbnZhbGlkRGVjaW1hbHMAAAAACgAAAAAAAAARSW52YWxpZEV4cGlyYXRpb24AAAAAAAAL",
-        "AAAAAQAAAAAAAAAAAAAAClRva2VuU3RhdGUAAAAAAAMAAAAAAAAAB2RlY2ltYWwAAAAABAAAAAAAAAAEbmFtZQAAABAAAAAAAAAABnN5bWJvbAAAAAAAEA==",
+        "AAAABAAAAAAAAAAAAAAAClRva2VuRXJyb3IAAAAAABAAAAAAAAAAEkFscmVhZHlJbml0aWFsaXplZAAAAAAAAQAAAAAAAAAOTm90SW5pdGlhbGl6ZWQAAAAAAAIAAAAAAAAADFVuYXV0aG9yaXplZAAAAAMAAAAAAAAAE0luc3VmZmljaWVudEJhbGFuY2UAAAAABAAAAAAAAAAVSW5zdWZmaWNpZW50QWxsb3dhbmNlAAAAAAAABQAAAAAAAAAOTmVnYXRpdmVBbW91bnQAAAAAAAYAAAAAAAAAEEFsbG93YW5jZUV4cGlyZWQAAAAHAAAAAAAAAAhPdmVyZmxvdwAAAAgAAAAAAAAABlBhdXNlZAAAAAAD6AAAAAAAAAARU3VwcGx5Q2FwRXhjZWVkZWQAAAAAAAAJAAAAAAAAAA9JbnZhbGlkRGVjaW1hbHMAAAAACgAAAAAAAAARSW52YWxpZEV4cGlyYXRpb24AAAAAAAALAAAAAAAAAA9JbnZhbGlkTWV0YWRhdGEAAAAADAAAAAAAAAAOTm9QZW5kaW5nQWRtaW4AAAAAAA0AAAAAAAAADkxlbmd0aE1pc21hdGNoAAAAAAAOAAAAAAAAAA1CYXRjaFRvb0xhcmdlAAAAAAAADw==",
+        "AAAAAQAAAAAAAAAAAAAAClRva2VuU3RhdGUAAAAAAAMAAACDSW1tdXRhYmxlIGFmdGVyIGluaXRpYWxpemF0aW9uOiBjaGFuZ2luZyBwcmVjaXNpb24gd291bGQgcmVwcmljZSBldmVyeQpleGlzdGluZyBiYWxhbmNlIHdpdGhvdXQgY2hhbmdpbmcgaXRzIHN0b3JlZCBpbnRlZ2VyIGFtb3VudC4AAAAAB2RlY2ltYWwAAAAABAAAAAAAAAAEbmFtZQAAABAAAAAAAAAABnN5bWJvbAAAAAAAEA==",
+        "AAAAAAAAAD5SZXR1cm5zIHRoZSBub21pbmF0ZWQgYWRtaW5pc3RyYXRvciwgaWYgYSB0cmFuc2ZlciBpcyBwZW5kaW5nLgAAAAAADXBlbmRpbmdfYWRtaW4AAAAAAAAAAAAAAQAAA+gAAAAT",
         "AAAAAAAAAAAAAAANdHJhbnNmZXJfZnJvbQAAAAAAAAQAAAAAAAAAB3NwZW5kZXIAAAAAEwAAAAAAAAAEZnJvbQAAABMAAAAAAAAAAnRvAAAAAAATAAAAAAAAAAZhbW91bnQAAAAAAAsAAAABAAAD6QAAA+0AAAAAAAAH0AAAAApUb2tlbkVycm9yAAA=",
         "AAAAAAAAAFNBZG1pbi1vbmx5OiBzZXQgdGhlIG1heGltdW0gc3VwcGx5IGNhcC4gRmFpbHMgaWYgY2FwIGlzIGJlbG93IGN1cnJlbnQgc3VwcGx5ICgjMzM5KQAAAAAOc2V0X21heF9zdXBwbHkAAAAAAAEAAAAAAAAAB25ld19jYXAAAAAD6AAAAAsAAAABAAAD6QAAA+0AAAAAAAAH0AAAAApUb2tlbkVycm9yAAA=",
+        "AAAAAAAAAAAAAAAOdHJhbnNmZXJfYmF0Y2gAAAAAAAMAAAAAAAAABGZyb20AAAATAAAAAAAAAApyZWNpcGllbnRzAAAAAAPqAAAAEwAAAAAAAAAHYW1vdW50cwAAAAPqAAAACwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAClRva2VuRXJyb3IAAA==",
         "AAAAAQAAAAAAAAAAAAAADEFsbG93YW5jZUtleQAAAAIAAAAAAAAABGZyb20AAAATAAAAAAAAAAdzcGVuZGVyAAAAABM=",
         "AAAAAQAAAAAAAAAAAAAADkFsbG93YW5jZVZhbHVlAAAAAAACAAAAAAAAAAZhbW91bnQAAAAAAAsAAAAAAAAAEWV4cGlyYXRpb25fbGVkZ2VyAAAAAAAABA==",
         "AAAAAAAAAbEjMzQ0OiBTRVAtNDEgYHNwZW5kYWJsZV9iYWxhbmNlYCDigJQgdGhlIHBvcnRpb24gb2YgYGJhbGFuY2VgIHRoYXQgaXMKYWN0dWFsbHkgdHJhbnNmZXJhYmxlIHJpZ2h0IG5vdy4gRm9yIHRoaXMgdG9rZW4gdGhlcmUgaXMgY3VycmVudGx5Cm5vIGxvY2tpbmcgbWVjaGFuaXNtLCBzbyBpdCBlcXVhbHMgYGJhbGFuY2VgIG1pbnVzIGFueSByZXNlcnZlIGhlbGQKaW4gYERhdGFLZXk6OkxvY2tlZChpZClgICgwIHRvZGF5IGZvciBldmVyeSBhZGRyZXNzKS4gUmVhZGluZyBpdCBhcwppdHMgb3duIHN0b3JhZ2UgbG9va3VwLCByYXRoZXIgdGhhbiBoYXJkY29kaW5nIGBzcGVuZGFibGUgPT0KYmFsYW5jZWAsIGxldHMgYSBmdXR1cmUgbG9jay92ZXN0aW5nIGZlYXR1cmUgcG9wdWxhdGUKYERhdGFLZXk6OkxvY2tlZGAgd2l0aG91dCBhbiBpbnRlcmZhY2UgYnJlYWsuAAAAAAAAEXNwZW5kYWJsZV9iYWxhbmNlAAAAAAAAAQAAAAAAAAACaWQAAAAAABMAAAABAAAACw==",
+        "AAAAAAAAAEZDYW5jZWxzIHRoZSBwZW5kaW5nIGFkbWluIHByb3Bvc2FsLiBPbmx5IHRoZSBjdXJyZW50IGFkbWluIGNhbiBjYW5jZWwuAAAAAAAVY2FuY2VsX2FkbWluX3RyYW5zZmVyAAAAAAAAAAAAAAEAAAPpAAAD7QAAAAAAAAfQAAAAClRva2VuRXJyb3IAAA==",
         "AAAABAAAACVDb21tb24gZXJyb3JzIHNoYXJlZCBhY3Jvc3MgY29udHJhY3RzAAAAAAAAAAAAAAtDb21tb25FcnJvcgAAAAADAAAAEkNvbnRyYWN0IGlzIHBhdXNlZAAAAAAABlBhdXNlZAAAAAAD6AAAAA9Ob3QgaW5pdGlhbGl6ZWQAAAAADk5vdEluaXRpYWxpemVkAAAAAAPpAAAAFlVuYXV0aG9yaXplZCBvcGVyYXRpb24AAAAAAAxVbmF1dGhvcml6ZWQAAAPq",
         "AAAAAgAAACpTaGFyZWQgZGF0YSBrZXlzIGZvciBhZG1pbiBhbmQgcGF1c2Ugc3RhdGUAAAAAAAAAAAANQ29tbW9uRGF0YUtleQAAAAAAAAIAAAAAAAAAAAAAAAVBZG1pbgAAAAAAAAAAAAAAAAAABlBhdXNlZAAA" ]),
       options
@@ -646,10 +771,15 @@ export class Client extends ContractClient {
         set_admin: this.txFromJSON<Result<void>>,
         initialize: this.txFromJSON<Result<void>>,
         max_supply: this.txFromJSON<Option<i128>>,
+        accept_admin: this.txFromJSON<Result<void>>,
         bump_balance: this.txFromJSON<null>,
+        set_metadata: this.txFromJSON<Result<void>>,
         total_supply: this.txFromJSON<i128>,
+        pending_admin: this.txFromJSON<Option<string>>,
         transfer_from: this.txFromJSON<Result<void>>,
         set_max_supply: this.txFromJSON<Result<void>>,
-        spendable_balance: this.txFromJSON<i128>
+        transfer_batch: this.txFromJSON<Result<void>>,
+        spendable_balance: this.txFromJSON<i128>,
+        cancel_admin_transfer: this.txFromJSON<Result<void>>
   }
 }

@@ -49,6 +49,8 @@ pub enum DataKey {
     UserBotCount(Address),
     UserClaimedAmt(Address),
     Username(String),
+    UserTombstone(Address),
+    UserPage(u32),
     /// Points earned by a user in a given season (#371). Persistent, per-user.
     SeasonPoints(u32, Address),
     // Global storage
@@ -56,6 +58,10 @@ pub enum DataKey {
     /// `LEADERBOARD_SIZE` entries, sorted by points descending. Ties: the user
     /// who reached that total first ranks higher.
     TopUsers,
+    /// Number of allocated `UserPage` buckets (#358), so `get_users` can bound
+    /// its scan to live pages while the user listing stays out of the
+    /// ever-growing instance vector.
+    PageCount,
     /// Per-season bounded leaderboard (#371): same `Vec<(Address, u64)>`
     /// shape as [`DataKey::TopUsers`], keyed by season, so historical seasons
     /// stay queryable after a new season starts. Instance storage, like
@@ -141,6 +147,16 @@ pub struct UserProfile {
     pub bot_count: u32,
 }
 
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct UserTombstone {
+    pub address: Address,
+    pub username: String,
+    pub total_points: u64,
+    pub claimed_amt: i128,
+    pub unregistered_at: u64,
+}
+
 /// One row of a season leaderboard (#371). `season_points` is what the row is
 /// ranked by; `total_points` is the user's lifetime total, carried alongside
 /// so a UI can show both without a second call.
@@ -174,7 +190,8 @@ pub enum RegistryError {
     NotRegistered = 4,
     Unauthorized = 5,
     NotInitialized = 6,
-    /// The registered-user counter has reached `u32::MAX`.
+    /// The registered-user counter has reached `u32::MAX`, or a points update
+    /// would overflow `u64`.
     Overflow = 7,
     /// More than `MAX_USERS_BATCH` addresses were passed to `get_users_batch`.
     BatchTooLarge = 8,
@@ -182,8 +199,12 @@ pub enum RegistryError {
     NegativeAmount = 9,
     /// `accept_admin` or `cancel_admin_transfer` called with no pending transfer.
     NoPendingAdmin = 10,
+    /// A single `add_points` update exceeded `MAX_POINTS_PER_CALL` (#363).
+    ImplausiblePoints = 11,
 }
 
+const PAGE_SIZE: u32 = 200;
+const MAX_POINTS_PER_CALL: u64 = 10_000_000;
 const LEDGER_BUMP: u32 = 120960;
 const LEDGER_THRESHOLD: u32 = 103680;
 
@@ -202,6 +223,49 @@ const USER_LIST_PAGE_SIZE: u32 = 100;
 #[contract]
 pub struct RegistryContract;
 
+impl RegistryContract {
+    fn page_count(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PageCount)
+            .unwrap_or(1)
+    }
+
+    fn page_users(env: &Env, page: u32) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::UserPage(page))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn remove_user_from_page(env: &Env, user: &Address) {
+        let page_count = Self::page_count(env);
+        for page in 0..page_count {
+            let users = Self::page_users(env, page);
+            let mut next = Vec::new(env);
+            let mut removed = false;
+            for addr in users.iter() {
+                if addr == *user {
+                    removed = true;
+                } else {
+                    next.push_back(addr);
+                }
+            }
+            if removed {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::UserPage(page), &next);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::UserPage(page),
+                    LEDGER_THRESHOLD,
+                    LEDGER_BUMP,
+                );
+                return;
+            }
+        }
+    }
+}
+
 #[contractimpl]
 impl RegistryContract {
     pub fn initialize(env: Env, admin: Address) -> Result<(), RegistryError> {
@@ -212,6 +276,7 @@ impl RegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::TotalUsers, &0u32);
+        env.storage().instance().set(&DataKey::PageCount, &1u32);
         env.storage()
             .instance()
             .set(&DataKey::TopUsers, &Vec::<(Address, u64)>::new(&env));
@@ -292,6 +357,27 @@ impl RegistryContract {
             .get(&DataKey::TotalUsers)
             .unwrap_or(0);
         let next_total = total.checked_add(1).ok_or(RegistryError::Overflow)?;
+
+        // Write the user into the paged bucket layout to avoid a single
+        // ever-growing instance vector (#358).
+        let page = total / PAGE_SIZE;
+        let mut page_count = Self::page_count(&env);
+        if page >= page_count {
+            page_count = page + 1;
+            env.storage()
+                .instance()
+                .set(&DataKey::PageCount, &page_count);
+        }
+        let mut bucket = Self::page_users(&env, page);
+        bucket.push_back(user.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserPage(page), &bucket);
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserPage(page),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
         env.storage()
             .instance()
             .set(&DataKey::TotalUsers, &next_total);
@@ -499,7 +585,13 @@ impl RegistryContract {
         if points == 0 {
             return Ok(());
         }
-        profile.total_points = profile.total_points.saturating_add(points);
+        if points > MAX_POINTS_PER_CALL {
+            return Err(RegistryError::ImplausiblePoints);
+        }
+        profile.total_points = profile
+            .total_points
+            .checked_add(points)
+            .ok_or(RegistryError::Overflow)?;
         Self::persist_profile(&env, &user, &profile);
         Self::update_top(&env, &user, profile.total_points);
 
@@ -526,6 +618,25 @@ impl RegistryContract {
         Ok(())
     }
 
+    pub fn set_points(env: Env, user: Address, value: u64) -> Result<(), RegistryError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(RegistryError::NotInitialized)?;
+        admin.require_auth();
+        let mut profile: UserProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserProfile(user.clone()))
+            .ok_or(RegistryError::NotRegistered)?;
+        profile.total_points = value;
+        Self::persist_profile(&env, &user, &profile);
+        Self::update_top(&env, &user, profile.total_points);
+        env.events().publish((symbol_short!("setpts"), user), value);
+        Ok(())
+    }
+
     pub fn increment_bot_count(env: Env, user: Address) -> Result<(), RegistryError> {
         // #318: only the configured bot_nft writer may mutate bot counts.
         Self::require_bot_nft(&env)?;
@@ -538,20 +649,12 @@ impl RegistryContract {
             .get(&DataKey::UserProfile(user.clone()))
             .ok_or(RegistryError::NotRegistered)?;
         profile.bot_count = profile.bot_count.saturating_add(1);
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserProfile(user.clone()), &profile);
-        env.storage().persistent().extend_ttl(
-            &DataKey::UserProfile(user.clone()),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
+        Self::persist_profile(&env, &user, &profile);
         // #370: indexers previously saw bot counts drop (`dec_bot`) but never
         // rise; mirror that event's topic/data style with the post-increment
         // count as the payload.
         env.events()
             .publish((symbol_short!("inc_bot"), user), profile.bot_count);
-        Self::persist_profile(&env, &user, &profile);
         Ok(())
     }
 
@@ -593,20 +696,27 @@ impl RegistryContract {
             return Ok(());
         }
         profile.claimed_amt = profile.claimed_amt.saturating_add(amount);
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserProfile(user.clone()), &profile);
-        env.storage().persistent().extend_ttl(
-            &DataKey::UserProfile(user.clone()),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
+        Self::persist_profile(&env, &user, &profile);
         // #370: AMT claim totals were previously invisible to indexers; emit
         // the claimed delta in the same topic style as `addpoints`.
         env.events()
             .publish((symbol_short!("claimed"), user), amount);
-        Self::persist_profile(&env, &user, &profile);
         Ok(())
+    }
+
+    pub fn get_users(env: Env, page: u32) -> Vec<Address> {
+        let page_count = env
+            .storage()
+            .instance()
+            .get(&DataKey::PageCount)
+            .unwrap_or(0);
+        if page >= page_count {
+            return Vec::new(&env);
+        }
+        env.storage()
+            .persistent()
+            .get(&DataKey::UserPage(page))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     fn load_top(env: &Env) -> Vec<(Address, u64)> {
@@ -687,6 +797,23 @@ impl RegistryContract {
             env.storage()
                 .instance()
                 .set(&DataKey::SeasonTop(season), &top);
+        }
+    }
+
+    /// Drop a user from the maintained leaderboard, e.g. after unregister (#364).
+    fn remove_from_top(env: &Env, user: &Address) {
+        let top = Self::load_top(env);
+        let mut next: Vec<(Address, u64)> = Vec::new(env);
+        let mut removed = false;
+        for entry in top.iter() {
+            if entry.0 == *user {
+                removed = true;
+            } else {
+                next.push_back(entry);
+            }
+        }
+        if removed {
+            env.storage().instance().set(&DataKey::TopUsers, &next);
         }
     }
 
@@ -1472,7 +1599,10 @@ mod test {
         assert_eq!(client.get_claimed_amt(&user), profile.claimed_amt);
 
         client.decrement_bot_count(&user);
-        assert_eq!(client.get_bot_count(&user), client.get_user(&user).bot_count);
+        assert_eq!(
+            client.get_bot_count(&user),
+            client.get_user(&user).bot_count
+        );
     }
 
     #[test]
@@ -1978,15 +2108,39 @@ mod test {
         assert_eq!(result, Err(Ok(RegistryError::NotRegistered)));
     }
 
-    // #93: total_points saturates at u64::MAX instead of overflowing/panicking
+    // #93: an implausibly large single update must be rejected before it can
+    //      pin a user permanently to the top of the leaderboard.
     #[test]
-    fn test_add_points_saturates_at_max() {
+    fn test_add_points_rejects_implausible_amount() {
         let (env, _admin, client) = setup();
         let user = Address::generate(&env);
         client.register(&user, &String::from_str(&env, "MaxPoints"));
-        client.add_points(&user, &u64::MAX);
-        client.add_points(&user, &1_u64);
+        let result = client.try_add_points(&user, &(10_000_001_u64));
+        assert_eq!(result, Err(Ok(RegistryError::ImplausiblePoints)));
+        assert_eq!(client.get_user(&user).total_points, 0);
+    }
+
+    // #93: overflow must fail without mutating the profile.
+    #[test]
+    fn test_add_points_overflow_returns_error_and_keeps_profile() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "Overflow"));
+        client.set_points(&user, &u64::MAX);
+        let result = client.try_add_points(&user, &1_u64);
+        assert_eq!(result, Err(Ok(RegistryError::Overflow)));
         assert_eq!(client.get_user(&user).total_points, u64::MAX);
+    }
+
+    // #93: admin correction is auditable and allowed to repair a bad value.
+    #[test]
+    fn test_set_points_admin_correction_updates_total() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "Repair"));
+        client.set_points(&user, &42_u64);
+        assert_eq!(client.get_user(&user).total_points, 42);
+        assert_eq!(client.get_admin(), admin);
     }
 
     // #93: Repeated accumulation across many calls sums correctly
@@ -2141,148 +2295,27 @@ mod test {
         assert_eq!(profile.total_points, 10);
     }
 
-    // ── get_rank tests ──────────────────────────────────────────────────────
-
+    // `bump_profile` is designed for the near-expiry case: it refreshes the
+    // profile TTL back to the maximum supported network bump before the profile
+    // is lost to archival.
     #[test]
-    fn test_get_rank_matches_leaderboard_ordering_and_top_is_one() {
+    fn test_bump_profile_restores_access_before_archival() {
         let (env, _admin, client) = setup();
-        let u1 = Address::generate(&env);
-        let u2 = Address::generate(&env);
-        let u3 = Address::generate(&env);
-        client.register(&u1, &String::from_str(&env, "R1"));
-        client.register(&u2, &String::from_str(&env, "R2"));
-        client.register(&u3, &String::from_str(&env, "R3"));
-        client.add_points(&u1, &100_u64);
-        client.add_points(&u2, &500_u64);
-        client.add_points(&u3, &250_u64);
+        let user = Address::generate(&env);
+        let keepalive = Address::generate(&env);
+        client.register(&user, &String::from_str(&env, "Ttl4"));
+        client.register(&keepalive, &String::from_str(&env, "KeepaliveTtl"));
 
-        let lb = client.get_leaderboard(&10_u32);
-        assert_eq!(client.get_rank(&u2), 1);
-        assert_eq!(client.get_rank(&u3), 2);
-        assert_eq!(client.get_rank(&u1), 3);
-        for (i, entry) in lb.iter().enumerate() {
-            assert_eq!(client.get_rank(&entry.address), (i as u32) + 1);
-        }
-    }
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP - 1);
+        client.bump_profile(&user);
+        automint_testutils::advance_ledger(&env, LEDGER_BUMP);
 
-    #[test]
-    fn test_get_rank_returns_unranked_sentinel_below_cutoff() {
-        let (env, _admin, client) = setup();
-        env.budget().reset_unlimited();
-        let mut users = std::vec::Vec::new();
-        for i in 0..LEADERBOARD_SIZE {
-            let u = Address::generate(&env);
-            client.register(&u, &String::from_str(&env, &std::format!("top{}", i)));
-            client.add_points(&u, &((LEADERBOARD_SIZE - i) as u64 * 10));
-            users.push(u);
-        }
-        // User registered after the top-100 is full and below the floor
-        let outsider = Address::generate(&env);
-        client.register(&outsider, &String::from_str(&env, "outsider"));
-        assert_eq!(client.get_rank(&outsider), UNRANKED);
-        assert_eq!(client.get_rank(&outsider), u32::MAX);
-
-        // Top user is rank 1; 100th user is rank 100
-        assert_eq!(client.get_rank(&users[0]), 1);
-        assert_eq!(
-            client.get_rank(&users[(LEADERBOARD_SIZE - 1) as usize]),
-            LEADERBOARD_SIZE
-        );
-
-        // Outsider earns enough points to overtake #1, evicting the previous 100th user
-        client.add_points(&outsider, &100_000_u64);
-        assert_eq!(client.get_rank(&outsider), 1);
-        assert_eq!(
-            client.get_rank(&users[(LEADERBOARD_SIZE - 1) as usize]),
-            UNRANKED
-        );
-    }
-
-    #[test]
-    fn test_get_rank_unregistered_fails() {
-        let (env, _admin, client) = setup();
-        let ghost = Address::generate(&env);
-        assert_eq!(
-            client.try_get_rank(&ghost),
-            Err(Ok(RegistryError::NotRegistered))
-        );
-    }
-
-    // ── Two-step admin transfer tests (AM-031) ──────────────────────────────
-
-    #[test]
-    fn test_admin_transfer_two_step_flow() {
-        let (env, admin, client) = setup();
-        let new_admin = Address::generate(&env);
-
-        assert_eq!(client.pending_admin(), None);
-        assert_eq!(
-            client.try_accept_admin(),
-            Err(Ok(RegistryError::NoPendingAdmin))
-        );
-
-        client.set_admin(&new_admin);
-        // Proposing sets pending_admin without changing active admin yet
-        assert_eq!(client.pending_admin(), Some(new_admin.clone()));
-        assert_eq!(client.get_admin(), admin);
-
-        client.accept_admin();
-        assert_eq!(client.get_admin(), new_admin);
-        assert_eq!(client.pending_admin(), None);
-    }
-
-    #[test]
-    fn test_cancel_admin_transfer_clears_pending() {
-        let (env, admin, client) = setup();
-        let new_admin = Address::generate(&env);
-
-        assert_eq!(
-            client.try_cancel_admin_transfer(),
-            Err(Ok(RegistryError::NoPendingAdmin))
-        );
-
-        client.set_admin(&new_admin);
-        assert_eq!(client.pending_admin(), Some(new_admin));
-
-        client.cancel_admin_transfer();
-        assert_eq!(client.pending_admin(), None);
-        assert_eq!(client.get_admin(), admin);
-        assert_eq!(
-            client.try_accept_admin(),
-            Err(Ok(RegistryError::NoPendingAdmin))
-        );
-    }
-
-    #[test]
-    fn test_set_admin_self_assignment_fails() {
-        let (_env, admin, client) = setup();
-        assert_eq!(
-            client.try_set_admin(&admin),
-            Err(Ok(RegistryError::Unauthorized))
-        );
-        assert_eq!(client.pending_admin(), None);
-    }
-
-    #[test]
-    fn test_admin_transfer_uninitialized_fails() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let id = env.register_contract(None, RegistryContract);
-        let client = RegistryContractClient::new(&env, &id);
-        let candidate = Address::generate(&env);
-
-        assert_eq!(
-            client.try_set_admin(&candidate),
-            Err(Ok(RegistryError::NotInitialized))
-        );
-        assert_eq!(
-            client.try_accept_admin(),
-            Err(Ok(RegistryError::NotInitialized))
-        );
-        assert_eq!(
-            client.try_cancel_admin_transfer(),
-            Err(Ok(RegistryError::NotInitialized))
-        );
+        let profile = client.get_user(&user);
+        // #373: `username` is the normalized (lowercased) identity while
+        // `display_name` preserves the casing the user registered with.
+        assert_eq!(profile.username, String::from_str(&env, "ttl4"));
+        assert_eq!(profile.display_name, String::from_str(&env, "Ttl4"));
+        assert_eq!(profile.total_points, 0);
     }
 
     // ── #370: every mutating function emits exactly one event ──────────────

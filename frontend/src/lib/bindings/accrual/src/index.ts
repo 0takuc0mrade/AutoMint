@@ -48,7 +48,7 @@ amt_scale: i128;
   points_per_amt: u64;
 }
 
-export type DataKey = {tag: "Config", values: void} | {tag: "Admin", values: void} | {tag: "Initialized", values: void} | {tag: "BotNft", values: void} | {tag: "Registry", values: void} | {tag: "UserAccrual", values: readonly [string]} | {tag: "Frozen", values: readonly [string]} | {tag: "ReentrancyGuard", values: void};
+export type DataKey = {tag: "Config", values: void} | {tag: "Admin", values: void} | {tag: "Initialized", values: void} | {tag: "BotNft", values: void} | {tag: "Registry", values: void} | {tag: "UserAccrual", values: readonly [string]} | {tag: "Frozen", values: readonly [string]} | {tag: "ReentrancyGuard", values: void} | {tag: "Token", values: void};
 
 
 export interface UserAccrual {
@@ -362,6 +362,28 @@ export interface Client {
   }) => Promise<AssembledTransaction<Option<AccrualState>>>
 
   /**
+   * Construct and simulate a accept_token_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Accepts a pending token-admin nomination for this accrual contract.
+   * Only the accrual admin may trigger the contract-authenticated call.
+   */
+  accept_token_admin: (options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a get_accrual_states transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Accrual states for up to `MAX_BATCH_USERS` users in one call, in the
    * same order as `users`. Addresses with no accrual record map to `None`.
@@ -438,7 +460,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAAIdW5mcmVlemUAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADEFjY3J1YWxFcnJvcg==",
         "AAAAAQAAAAAAAAAAAAAABkNvbmZpZwAAAAAAAgAAAHExMF50b2tlbl9kZWNpbWFscyDigJQgZXZlcnkgbWludCBpcyBtdWx0aXBsaWVkIGJ5IHRoaXMgc28gdGhhdAoiMSBBTVQiID0gYDEgKiBhbXRfc2NhbGVgIGJhc2UgdW5pdHMgKGZpeGVzICM0MTApLgAAAAAAAAlhbXRfc2NhbGUAAAAAAAALAAAAAAAAAA5wb2ludHNfcGVyX2FtdAAAAAAABg==",
         "AAAAAAAAAAAAAAAJc3luY19yYXRlAAAAAAAAAQAAAAAAAAAEdXNlcgAAABMAAAABAAAD6QAAAAYAAAfQAAAADEFjY3J1YWxFcnJvcg==",
-        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACAAAAAAAAAAAAAAABkNvbmZpZwAAAAAAAAAAAAAAAAAFQWRtaW4AAAAAAAAAAAAAAAAAAAtJbml0aWFsaXplZAAAAAAAAAAAAAAAAAZCb3ROZnQAAAAAAAAAAAAAAAAACFJlZ2lzdHJ5AAAAAQAAAAAAAAALVXNlckFjY3J1YWwAAAAAAQAAABMAAAABAAAAOlNldCBieSB0aGUgYWRtaW4gdG8gYmxvY2sgYSB1c2VyJ3MgYWNjcnVhbCBhY3Rpb25zICgjNDEzKS4AAAAAAAZGcm96ZW4AAAAAAAEAAAATAAAAAAAAAAAAAAAPUmVlbnRyYW5jeUd1YXJkAA==",
+        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACQAAAAAAAAAAAAAABkNvbmZpZwAAAAAAAAAAAAAAAAAFQWRtaW4AAAAAAAAAAAAAAAAAAAtJbml0aWFsaXplZAAAAAAAAAAAAAAAAAZCb3ROZnQAAAAAAAAAAAAAAAAACFJlZ2lzdHJ5AAAAAQAAAAAAAAALVXNlckFjY3J1YWwAAAAAAQAAABMAAAABAAAAOlNldCBieSB0aGUgYWRtaW4gdG8gYmxvY2sgYSB1c2VyJ3MgYWNjcnVhbCBhY3Rpb25zICgjNDEzKS4AAAAAAAZGcm96ZW4AAAAAAAEAAAATAAAAAAAAAAAAAAAPUmVlbnRyYW5jeUd1YXJkAAAAAAAAAAAAAAAABVRva2VuAAAA",
         "AAAAAAAAAAAAAAAKaW5pdGlhbGl6ZQAAAAAABQAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAAdib3RfbmZ0AAAAABMAAAAAAAAACHJlZ2lzdHJ5AAAAEwAAAAAAAAAFdG9rZW4AAAAAAAATAAAAAAAAAA5wb2ludHNfcGVyX2FtdAAAAAAABgAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADEFjY3J1YWxFcnJvcg==",
         "AAAAAAAAAAAAAAAMc3RvcF9hY2NydWFsAAAAAgAAAAAAAAAEdXNlcgAAABMAAAAAAAAACHJlZ2lzdHJ5AAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADEFjY3J1YWxFcnJvcg==",
         "AAAAAAAAAUBTdGFydHMgYWNjcnVpbmcgZm9yIGB1c2VyYCBhdCB0aGUgY29tYmluZWQgcmF0ZSBvZiB0aGUgYm90cyB0aGV5IG93biwKcmVhZCBmcm9tIHRoZSBib3RfbmZ0IGNvbnRyYWN0IOKAlCBuZXZlciBmcm9tIHRoZSBjYWxsZXIgKCMzMTkpLgoKVGhlIHVzZXIgbXVzdCBhbHJlYWR5IGJlIHJlZ2lzdGVyZWQgKCM0MTUpOiBhbiB1bnJlZ2lzdGVyZWQgYWRkcmVzcwp3b3VsZCBvdGhlcndpc2UgYWNjcnVlIHRpbWUgaXQgY2FuIG5ldmVyIGNsYWltLCBmYWlsaW5nIGxhdGVyIGluc2lkZQpgcmVnaXN0cnkuYWRkX3BvaW50c2Agd2l0aCBubyBhY3Rpb25hYmxlIGVycm9yLgAAAA1zdGFydF9hY2NydWFsAAAAAAAAAQAAAAAAAAAEdXNlcgAAABMAAAABAAAD6QAAA+0AAAAAAAAH0AAAAAxBY2NydWFsRXJyb3I=",
@@ -448,6 +470,7 @@ export class Client extends ContractClient {
         "AAAAAQAAAAAAAAAAAAAADEFjY3J1YWxTdGF0ZQAAAAUAAAAAAAAADGNhcnJ5X3BvaW50cwAAAAYAAAAAAAAADWxhc3RfY2xhaW1fdHMAAAAAAAAGAAAAAAAAAA9saWZldGltZV9wb2ludHMAAAAABgAAAAAAAAAEcmF0ZQAAAAYAAAAAAAAACnN0YXJ0ZWRfYXQAAAAAAAY=",
         "AAAAAAAAAAAAAAARZ2V0X2FjY3J1YWxfYWRtaW4AAAAAAAAAAAAAAQAAA+kAAAATAAAH0AAAAAxBY2NydWFsRXJyb3I=",
         "AAAAAAAAAAAAAAARZ2V0X2FjY3J1YWxfc3RhdGUAAAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPoAAAH0AAAAAxBY2NydWFsU3RhdGU=",
+        "AAAAAAAAAIdBY2NlcHRzIGEgcGVuZGluZyB0b2tlbi1hZG1pbiBub21pbmF0aW9uIGZvciB0aGlzIGFjY3J1YWwgY29udHJhY3QuCk9ubHkgdGhlIGFjY3J1YWwgYWRtaW4gbWF5IHRyaWdnZXIgdGhlIGNvbnRyYWN0LWF1dGhlbnRpY2F0ZWQgY2FsbC4AAAAAEmFjY2VwdF90b2tlbl9hZG1pbgAAAAAAAAAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADEFjY3J1YWxFcnJvcg==",
         "AAAAAAAAANFBY2NydWFsIHN0YXRlcyBmb3IgdXAgdG8gYE1BWF9CQVRDSF9VU0VSU2AgdXNlcnMgaW4gb25lIGNhbGwsIGluIHRoZQpzYW1lIG9yZGVyIGFzIGB1c2Vyc2AuIEFkZHJlc3NlcyB3aXRoIG5vIGFjY3J1YWwgcmVjb3JkIG1hcCB0byBgTm9uZWAuCkxldHMgYSBsZWFkZXJib2FyZCBwb2xsIG9uZSBzaW11bGF0aW9uIGluc3RlYWQgb2Ygb25lIHBlciByb3cgKCM0MjApLgAAAAAAABJnZXRfYWNjcnVhbF9zdGF0ZXMAAAAAAAEAAAAAAAAABXVzZXJzAAAAAAAD6gAAABMAAAABAAAD6QAAA+oAAAPoAAAH0AAAAAxBY2NydWFsU3RhdGUAAAfQAAAADEFjY3J1YWxFcnJvcg==",
         "AAAAAAAAAAAAAAASc2V0X3BvaW50c19wZXJfYW10AAAAAAABAAAAAAAAAA5wb2ludHNfcGVyX2FtdAAAAAAABgAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADEFjY3J1YWxFcnJvcg==",
         "AAAAAAAAAM5TZWNvbmRzIHVudGlsIHRoZSBuZXh0IEFNVCB0b2tlbiB3aWxsIGJlIGVhcm5lZC4gUmV0dXJucyAwIGlmIHRoZSB1c2VyCmFscmVhZHkgaGFzIGVub3VnaCBjYXJyeSBwb2ludHMgZm9yIHRoZSBuZXh0IHRva2VuIG9yIGlmIHRoZWlyIHJhdGUgaXMgMC4KQ29tcHV0ZWQgZnJvbSBjYXJyeV9wb2ludHMsIHBvaW50c19wZXJfYW10LCBhbmQgYWNjcnVhbCByYXRlLgAAAAAAE3NlY29uZHNfdG9fbmV4dF9hbXQAAAAAAQAAAAAAAAAEdXNlcgAAABMAAAABAAAD6QAAAAYAAAfQAAAADEFjY3J1YWxFcnJvcg==" ]),
@@ -467,6 +490,7 @@ export class Client extends ContractClient {
         pending_points: this.txFromJSON<Result<u128>>,
         get_accrual_admin: this.txFromJSON<Result<string>>,
         get_accrual_state: this.txFromJSON<Option<AccrualState>>,
+        accept_token_admin: this.txFromJSON<Result<void>>,
         get_accrual_states: this.txFromJSON<Result<Array<Option<AccrualState>>>>,
         set_points_per_amt: this.txFromJSON<Result<void>>,
         seconds_to_next_amt: this.txFromJSON<Result<u64>>

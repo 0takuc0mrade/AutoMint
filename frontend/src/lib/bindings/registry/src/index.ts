@@ -38,7 +38,7 @@ export const networks = {
   }
 } as const
 
-export type DataKey = {tag: "UserProfile", values: readonly [string]} | {tag: "Username", values: readonly [string]} | {tag: "SeasonPoints", values: readonly [u32, string]} | {tag: "TopUsers", values: void} | {tag: "SeasonTop", values: readonly [u32]} | {tag: "Season", values: void} | {tag: "TotalUsers", values: void} | {tag: "Admin", values: void} | {tag: "PendingAdmin", values: void} | {tag: "Initialized", values: void} | {tag: "Writers", values: void};
+export type DataKey = {tag: "UserProfile", values: readonly [string]} | {tag: "UserPoints", values: readonly [string]} | {tag: "UserBotCount", values: readonly [string]} | {tag: "UserClaimedAmt", values: readonly [string]} | {tag: "Username", values: readonly [string]} | {tag: "UserTombstone", values: readonly [string]} | {tag: "UserPage", values: readonly [u32]} | {tag: "SeasonPoints", values: readonly [u32, string]} | {tag: "TopUsers", values: void} | {tag: "PageCount", values: void} | {tag: "SeasonTop", values: readonly [u32]} | {tag: "Season", values: void} | {tag: "TotalUsers", values: void} | {tag: "Admin", values: void} | {tag: "PendingAdmin", values: void} | {tag: "Initialized", values: void} | {tag: "Writers", values: void};
 
 
 export interface Writers {
@@ -111,7 +111,8 @@ export const Errors = {
   6: {message:"NotInitialized"},
 
   /**
-   * The registered-user counter has reached `u32::MAX`.
+   * The registered-user counter has reached `u32::MAX`, or a points update
+   * would overflow `u64`.
    */
   7: {message:"Overflow"},
 
@@ -128,8 +129,22 @@ export const Errors = {
   /**
    * `accept_admin` or `cancel_admin_transfer` called with no pending transfer.
    */
-  10: {message:"NoPendingAdmin"}
+  10: {message:"NoPendingAdmin"},
+
+  /**
+   * A single `add_points` update exceeded `MAX_POINTS_PER_CALL` (#363).
+   */
+  11: {message:"ImplausiblePoints"}
 }
+
+export interface UserTombstone {
+  address: string;
+  claimed_amt: i128;
+  total_points: u64;
+  unregistered_at: u64;
+  username: string;
+}
+
 
 export interface Client {
   /**
@@ -220,6 +235,26 @@ export interface Client {
   }) => Promise<AssembledTransaction<Result<string>>>
 
   /**
+   * Construct and simulate a get_users transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  get_users: ({page}: {page: u32}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Array<string>>>
+
+  /**
    * Construct and simulate a set_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Step one of a two-step admin transfer (AM-031): the current admin
    * nominates `new_admin` as the pending admin. The active admin does not
@@ -265,6 +300,26 @@ export interface Client {
   }) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a get_points transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  get_points: ({user}: {user: string}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<u64>>>
+
+  /**
    * Construct and simulate a get_season transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Current season counter (#371). Season 0 is in effect until
    * [`Self::start_new_season`] is first called.
@@ -290,6 +345,46 @@ export interface Client {
    * Construct and simulate a initialize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
   initialize: ({admin}: {admin: string}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a set_points transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  set_points: ({user, value}: {user: string, value: u64}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a unregister transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  unregister: ({user}: {user: string}, options?: {
     /**
      * The fee to pay for the transaction. Default: BASE_FEE
      */
@@ -390,6 +485,46 @@ export interface Client {
   }) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a bump_profile transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  bump_profile: ({user}: {user: string}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_bot_count transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  get_bot_count: ({user}: {user: string}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<u32>>>
+
+  /**
    * Construct and simulate a is_registered transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * #372: registration check performs the *same* read `get_user` performs
    * (a persistent `.get()`), so the two can never disagree about an
@@ -462,6 +597,26 @@ export interface Client {
      */
     simulate?: boolean;
   }) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_claimed_amt transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  get_claimed_amt: ({user}: {user: string}, options?: {
+    /**
+     * The fee to pay for the transaction. Default: BASE_FEE
+     */
+    fee?: number;
+
+    /**
+     * The maximum amount of time to wait for the transaction to complete. Default: DEFAULT_TIMEOUT
+     */
+    timeoutInSeconds?: number;
+
+    /**
+     * Whether to automatically simulate the transaction when constructing the AssembledTransaction. Default: true
+     */
+    simulate?: boolean;
+  }) => Promise<AssembledTransaction<Result<i128>>>
 
   /**
    * Construct and simulate a get_leaderboard transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -633,24 +788,32 @@ export class Client extends ContractClient {
         "AAAAAAAAAIQjMzcyOiByZWFkcyB0aGUgcHJvZmlsZSBmcm9tIHBlcnNpc3RlbnQgc3RvcmFnZS4gQXJjaGl2YWwtc2Vuc2l0aXZlIOKAlApzZWUgW2BTZWxmOjppc19yZWdpc3RlcmVkYF0sIHdoaWNoIHBlcmZvcm1zIHRoaXMgZXhhY3QgcmVhZC4AAAAIZ2V0X3VzZXIAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAH0AAAAAtVc2VyUHJvZmlsZQAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=",
         "AAAAAAAAAAAAAAAIcmVnaXN0ZXIAAAACAAAAAAAAAAR1c2VyAAAAEwAAAAAAAAAIdXNlcm5hbWUAAAAQAAAAAQAAA+kAAAPtAAAAAAAAB9AAAAANUmVnaXN0cnlFcnJvcgAAAA==",
         "AAAAAAAAAAAAAAAJZ2V0X2FkbWluAAAAAAAAAAAAAAEAAAPpAAAAEwAAB9AAAAANUmVnaXN0cnlFcnJvcgAAAA==",
+        "AAAAAAAAAAAAAAAJZ2V0X3VzZXJzAAAAAAAAAQAAAAAAAAAEcGFnZQAAAAQAAAABAAAD6gAAABM=",
         "AAAAAAAAATFTdGVwIG9uZSBvZiBhIHR3by1zdGVwIGFkbWluIHRyYW5zZmVyIChBTS0wMzEpOiB0aGUgY3VycmVudCBhZG1pbgpub21pbmF0ZXMgYG5ld19hZG1pbmAgYXMgdGhlIHBlbmRpbmcgYWRtaW4uIFRoZSBhY3RpdmUgYWRtaW4gZG9lcyBub3QKY2hhbmdlIHVudGlsIGBuZXdfYWRtaW5gIGNhbGxzIFtgU2VsZjo6YWNjZXB0X2FkbWluYF0uIFByb3Bvc2luZyBhZ2FpbgpyZXBsYWNlcyB0aGUgcGVuZGluZyBub21pbmF0aW9uOyBzZWxmLW5vbWluYXRpb24gaXMgcmVqZWN0ZWQgd2l0aApbYFJlZ2lzdHJ5RXJyb3I6OlVuYXV0aG9yaXplZGBdLgAAAAAAAAlzZXRfYWRtaW4AAAAAAAABAAAAAAAAAAluZXdfYWRtaW4AAAAAAAATAAAAAQAAA+kAAAPtAAAAAAAAB9AAAAANUmVnaXN0cnlFcnJvcgAAAA==",
-        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACwAAAAEAAAAAAAAAC1VzZXJQcm9maWxlAAAAAAEAAAATAAAAAQAAAMlVc2VybmFtZSB1bmlxdWVuZXNzIG1hcHBpbmcsIGtleWVkIG9uIHRoZSAqKkFTQ0lJLWxvd2VyY2FzZWQqKiBmb3JtCigjMzczKSBzbyBgQWxpY2VgIGFuZCBgYWxpY2VgIGNhbm5vdCBib3RoIHJlZ2lzdGVyLiBUaGUgb3JpZ2luYWwKY2FzaW5nIHRoZSB1c2VyIHR5cGVkIGlzIHByZXNlcnZlZCBpbiBbYFVzZXJQcm9maWxlOjpkaXNwbGF5X25hbWVgXS4AAAAAAAAIVXNlcm5hbWUAAAABAAAAEAAAAAEAAABHUG9pbnRzIGVhcm5lZCBieSBhIHVzZXIgaW4gYSBnaXZlbiBzZWFzb24gKCMzNzEpLiBQZXJzaXN0ZW50LCBwZXItdXNlci4AAAAADFNlYXNvblBvaW50cwAAAAIAAAAEAAAAEwAAAAAAAACvQm91bmRlZCBsZWFkZXJib2FyZCAoIzMzMik6IGBWZWM8KEFkZHJlc3MsIHU2NCk+YCBvZiBhdCBtb3N0CmBMRUFERVJCT0FSRF9TSVpFYCBlbnRyaWVzLCBzb3J0ZWQgYnkgcG9pbnRzIGRlc2NlbmRpbmcuIFRpZXM6IHRoZSB1c2VyCndobyByZWFjaGVkIHRoYXQgdG90YWwgZmlyc3QgcmFua3MgaGlnaGVyLgAAAAAIVG9wVXNlcnMAAAABAAABClBlci1zZWFzb24gYm91bmRlZCBsZWFkZXJib2FyZCAoIzM3MSk6IHNhbWUgYFZlYzwoQWRkcmVzcywgdTY0KT5gCnNoYXBlIGFzIFtgRGF0YUtleTo6VG9wVXNlcnNgXSwga2V5ZWQgYnkgc2Vhc29uLCBzbyBoaXN0b3JpY2FsIHNlYXNvbnMKc3RheSBxdWVyeWFibGUgYWZ0ZXIgYSBuZXcgc2Vhc29uIHN0YXJ0cy4gSW5zdGFuY2Ugc3RvcmFnZSwgbGlrZQpgVG9wVXNlcnNgLCBzbyB0aGUgYm9hcmRzIGxpdmUgYXMgbG9uZyBhcyB0aGUgY29udHJhY3QgaW5zdGFuY2UuAAAAAAAJU2Vhc29uVG9wAAAAAAAAAQAAAAQAAAAAAAAAQ0N1cnJlbnQgc2Vhc29uIGNvdW50ZXIgKCMzNzEpLiBJbnN0YW5jZSBzdG9yYWdlOyBhYnNlbnQgPSBzZWFzb24gMC4AAAAABlNlYXNvbgAAAAAAAAAAAAAAAAAKVG90YWxVc2VycwAAAAAAAAAAAAAAAAAFQWRtaW4AAAAAAAAAAAAAAAAAAAxQZW5kaW5nQWRtaW4AAAAAAAAAAAAAAAtJbml0aWFsaXplZAAAAAAAAAAAAAAAAAdXcml0ZXJzAA==",
+        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAAEQAAAAEAAAAAAAAAC1VzZXJQcm9maWxlAAAAAAEAAAATAAAAAQAAAMlVc2VybmFtZSB1bmlxdWVuZXNzIG1hcHBpbmcsIGtleWVkIG9uIHRoZSAqKkFTQ0lJLWxvd2VyY2FzZWQqKiBmb3JtCigjMzczKSBzbyBgQWxpY2VgIGFuZCBgYWxpY2VgIGNhbm5vdCBib3RoIHJlZ2lzdGVyLiBUaGUgb3JpZ2luYWwKY2FzaW5nIHRoZSB1c2VyIHR5cGVkIGlzIHByZXNlcnZlZCBpbiBbYFVzZXJQcm9maWxlOjpkaXNwbGF5X25hbWVgXS4AAAAAAAAKVXNlclBvaW50cwAAAAAAAQAAABMAAAABAAAAAAAAAAxVc2VyQm90Q291bnQAAAABAAAAEwAAAAEAAAAAAAAADlVzZXJDbGFpbWVkQW10AAAAAAABAAAAEwAAAAEAAAAAAAAACFVzZXJuYW1lAAAAAQAAABAAAAABAAAAAAAAAA1Vc2VyVG9tYnN0b25lAAAAAAAAAQAAABMAAAABAAAAAAAAAAhVc2VyUGFnZQAAAAEAAAAEAAAAAQAAAEdQb2ludHMgZWFybmVkIGJ5IGEgdXNlciBpbiBhIGdpdmVuIHNlYXNvbiAoIzM3MSkuIFBlcnNpc3RlbnQsIHBlci11c2VyLgAAAAAMU2Vhc29uUG9pbnRzAAAAAgAAAAQAAAATAAAAAAAAAK9Cb3VuZGVkIGxlYWRlcmJvYXJkICgjMzMyKTogYFZlYzwoQWRkcmVzcywgdTY0KT5gIG9mIGF0IG1vc3QKYExFQURFUkJPQVJEX1NJWkVgIGVudHJpZXMsIHNvcnRlZCBieSBwb2ludHMgZGVzY2VuZGluZy4gVGllczogdGhlIHVzZXIKd2hvIHJlYWNoZWQgdGhhdCB0b3RhbCBmaXJzdCByYW5rcyBoaWdoZXIuAAAAAAhUb3BVc2VycwAAAAAAAACkTnVtYmVyIG9mIGFsbG9jYXRlZCBgVXNlclBhZ2VgIGJ1Y2tldHMgKCMzNTgpLCBzbyBgZ2V0X3VzZXJzYCBjYW4gYm91bmQKaXRzIHNjYW4gdG8gbGl2ZSBwYWdlcyB3aGlsZSB0aGUgdXNlciBsaXN0aW5nIHN0YXlzIG91dCBvZiB0aGUKZXZlci1ncm93aW5nIGluc3RhbmNlIHZlY3Rvci4AAAAJUGFnZUNvdW50AAAAAAAAAQAAAQpQZXItc2Vhc29uIGJvdW5kZWQgbGVhZGVyYm9hcmQgKCMzNzEpOiBzYW1lIGBWZWM8KEFkZHJlc3MsIHU2NCk+YApzaGFwZSBhcyBbYERhdGFLZXk6OlRvcFVzZXJzYF0sIGtleWVkIGJ5IHNlYXNvbiwgc28gaGlzdG9yaWNhbCBzZWFzb25zCnN0YXkgcXVlcnlhYmxlIGFmdGVyIGEgbmV3IHNlYXNvbiBzdGFydHMuIEluc3RhbmNlIHN0b3JhZ2UsIGxpa2UKYFRvcFVzZXJzYCwgc28gdGhlIGJvYXJkcyBsaXZlIGFzIGxvbmcgYXMgdGhlIGNvbnRyYWN0IGluc3RhbmNlLgAAAAAACVNlYXNvblRvcAAAAAAAAAEAAAAEAAAAAAAAAENDdXJyZW50IHNlYXNvbiBjb3VudGVyICgjMzcxKS4gSW5zdGFuY2Ugc3RvcmFnZTsgYWJzZW50ID0gc2Vhc29uIDAuAAAAAAZTZWFzb24AAAAAAAAAAAAAAAAAClRvdGFsVXNlcnMAAAAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAAMUGVuZGluZ0FkbWluAAAAAAAAAAAAAAALSW5pdGlhbGl6ZWQAAAAAAAAAAAAAAAAHV3JpdGVycwA=",
         "AAAAAQAAAAAAAAAAAAAAB1dyaXRlcnMAAAAAAgAAAAAAAAAHYWNjcnVhbAAAAAATAAAAAAAAAAdib3RfbmZ0AAAAABM=",
         "AAAAAAAAAAAAAAAKYWRkX3BvaW50cwAAAAAAAgAAAAAAAAAEdXNlcgAAABMAAAAAAAAABnBvaW50cwAAAAAABgAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=",
+        "AAAAAAAAAAAAAAAKZ2V0X3BvaW50cwAAAAAAAQAAAAAAAAAEdXNlcgAAABMAAAABAAAD6QAAAAYAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=",
         "AAAAAAAAAGZDdXJyZW50IHNlYXNvbiBjb3VudGVyICgjMzcxKS4gU2Vhc29uIDAgaXMgaW4gZWZmZWN0IHVudGlsCltgU2VsZjo6c3RhcnRfbmV3X3NlYXNvbmBdIGlzIGZpcnN0IGNhbGxlZC4AAAAAAApnZXRfc2Vhc29uAAAAAAAAAAAAAQAAAAQ=",
         "AAAAAAAAAAAAAAAKaW5pdGlhbGl6ZQAAAAAAAQAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAQAAA+kAAAPtAAAAAAAAB9AAAAANUmVnaXN0cnlFcnJvcgAAAA==",
+        "AAAAAAAAAAAAAAAKc2V0X3BvaW50cwAAAAAAAgAAAAAAAAAEdXNlcgAAABMAAAAAAAAABXZhbHVlAAAAAAAABgAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=",
+        "AAAAAAAAAAAAAAAKdW5yZWdpc3RlcgAAAAAAAQAAAAAAAAAEdXNlcgAAABMAAAABAAAD6QAAA+0AAAAAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
         "AAAAAAAAAAAAAAALZ2V0X3dyaXRlcnMAAAAAAAAAAAEAAAPoAAAH0AAAAAdXcml0ZXJzAA==",
         "AAAAAAAAAAAAAAALc2V0X3dyaXRlcnMAAAAAAgAAAAAAAAAHYWNjcnVhbAAAAAATAAAAAAAAAAdib3RfbmZ0AAAAABMAAAABAAAD6QAAA+0AAAAAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
         "AAAAAAAAAAAAAAALdG90YWxfdXNlcnMAAAAAAAAAAAEAAAAE",
         "AAAAAAAAALlTdGVwIHR3byBvZiBhIHR3by1zdGVwIGFkbWluIHRyYW5zZmVyIChBTS0wMzEpOiB0aGUgbm9taW5hdGVkIHBlbmRpbmcKYWRtaW4gYWNjZXB0cyBhbmQgYmVjb21lcyB0aGUgYWN0aXZlIGFkbWluLiBGYWlscyB3aXRoCltgUmVnaXN0cnlFcnJvcjo6Tm9QZW5kaW5nQWRtaW5gXSBpZiBubyB0cmFuc2ZlciBpcyBwZW5kaW5nLgAAAAAAAAxhY2NlcHRfYWRtaW4AAAAAAAAAAQAAA+kAAAPtAAAAAAAAB9AAAAANUmVnaXN0cnlFcnJvcgAAAA==",
+        "AAAAAAAAAAAAAAAMYnVtcF9wcm9maWxlAAAAAQAAAAAAAAAEdXNlcgAAABMAAAABAAAD6QAAA+0AAAAAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
+        "AAAAAAAAAAAAAAANZ2V0X2JvdF9jb3VudAAAAAAAAAEAAAAAAAAABHVzZXIAAAATAAAAAQAAA+kAAAAEAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
         "AAAAAAAAAccjMzcyOiByZWdpc3RyYXRpb24gY2hlY2sgcGVyZm9ybXMgdGhlICpzYW1lKiByZWFkIGBnZXRfdXNlcmAgcGVyZm9ybXMKKGEgcGVyc2lzdGVudCBgLmdldCgpYCksIHNvIHRoZSB0d28gY2FuIG5ldmVyIGRpc2FncmVlIGFib3V0IGFuCmFkZHJlc3Mg4oCUIGJvdGggc2VlIHRoZSBwcm9maWxlLCBvciBib3RoIHNlZSBpdCBhcyBhYnNlbnQvYXJjaGl2ZWQuCgpCb3RoIGZ1bmN0aW9ucyBhcmUgKiphcmNoaXZhbC1zZW5zaXRpdmUqKjogaWYgYSBwcm9maWxlJ3MgVFRMIGxhcHNlcywKdGhlIHBlcnNpc3RlbnQgZW50cnkgaXMgYXJjaGl2ZWQgYW5kIGJvdGggcmVhZHMgZmFpbCBpZGVudGljYWxseQoob24gbWFpbm5ldCB0aGUgdHJhbnNhY3Rpb24gbmV2ZXIgcmVhY2hlcyB0aGUgY29udHJhY3QpLiBLZWVwIGFueQpmdXR1cmUgcmVnaXN0cmF0aW9uIHByb2JlIGJhc2VkIG9uIHRoaXMgc2FtZSByZWFkLgAAAAANaXNfcmVnaXN0ZXJlZAAAAAAAAAEAAAAAAAAABHVzZXIAAAATAAAAAQAAAAE=",
         "AAAAAAAAAFlSZXR1cm5zIHRoZSBhZGRyZXNzIG5vbWluYXRlZCBieSBbYFNlbGY6OnNldF9hZG1pbmBdLCBpZiBhIHRyYW5zZmVyIGlzCmN1cnJlbnRseSBwZW5kaW5nLgAAAAAAAA1wZW5kaW5nX2FkbWluAAAAAAAAAAAAAAEAAAPoAAAAEw==",
         "AAAAAQAAAMFPbmUgcm93IG9mIGEgc2Vhc29uIGxlYWRlcmJvYXJkICgjMzcxKS4gYHNlYXNvbl9wb2ludHNgIGlzIHdoYXQgdGhlIHJvdyBpcwpyYW5rZWQgYnk7IGB0b3RhbF9wb2ludHNgIGlzIHRoZSB1c2VyJ3MgbGlmZXRpbWUgdG90YWwsIGNhcnJpZWQgYWxvbmdzaWRlCnNvIGEgVUkgY2FuIHNob3cgYm90aCB3aXRob3V0IGEgc2Vjb25kIGNhbGwuAAAAAAAAAAAAAAtTZWFzb25FbnRyeQAAAAAEAAAAAAAAAAdhZGRyZXNzAAAAABMAAAA9RGlzcGxheSB1c2VybmFtZSwgb3JpZ2luYWwgY2FzaW5nIHByZXNlcnZlZCAoYGRpc3BsYXlfbmFtZWApLgAAAAAAAAxkaXNwbGF5X25hbWUAAAAQAAAAAAAAAA1zZWFzb25fcG9pbnRzAAAAAAAABgAAAAAAAAAMdG90YWxfcG9pbnRzAAAABg==",
         "AAAAAQAAAv1QZXItdXNlciBwcm9maWxlIHN0b3JlZCBpbiBwZXJzaXN0ZW50IHN0b3JhZ2UuCgojIE51bWVyaWMgdHlwZSByYXRpb25hbGUgKGB0b3RhbF9wb2ludHM6IHU2NGAgdnMgYGNsYWltZWRfYW10OiBpMTI4YCkKLSBgdG90YWxfcG9pbnRzYCBpcyBgdTY0YDogcG9pbnRzIGFyZSBhIG5vbi1uZWdhdGl2ZSBpbnRlcm5hbCBhY2NvdW50aW5nCmNvdW50ZXIgYWNjcnVlZCBmcm9tIGJvdCByYXRlcyAoYHU2NGAgcG9pbnRzL3NlYyDDlyBlbGFwc2VkIGB1NjRgIHNlY29uZHMpCmFuZCBuZXZlciBwYXJ0aWNpcGF0ZSBpbiBTRVAtNDEgdG9rZW4gYXJpdGhtZXRpYy4KLSBgY2xhaW1lZF9hbXRgIHN0YXlzIGBpMTI4YDogYWNyb3NzIFNvcm9iYW4gYW5kIFNFUC00MSAoYHNvcm9iYW5fc2RrOjp0b2tlbmApLAp0b2tlbiBiYWxhbmNlcyBhbmQgdHJhbnNmZXIvbWludCBhbW91bnRzIGFyZSBjYW5vbmljYWxseSBgaTEyOGAgKHNjYWxlZCBieQpgMTBeZGVjaW1hbHNgKS4gS2VlcGluZyBgY2xhaW1lZF9hbXRgIGFzIGBpMTI4YCBtYXRjaGVzIHRoZSBBTVQgdG9rZW4KY29udHJhY3QncyBgbWludGAvYGJhbGFuY2VgIHNpZ25hdHVyZSB3aXRob3V0IG5hcnJvd2luZyBjYXN0cywgd2hpbGUKW2BSZWdpc3RyeUNvbnRyYWN0OjphZGRfY2xhaW1lZF9hbXRgXSByZWplY3RzIG5lZ2F0aXZlIHZhbHVlcyB3aXRoCltgUmVnaXN0cnlFcnJvcjo6TmVnYXRpdmVBbW91bnRgXSBzbyB0aGUgY3VtdWxhdGl2ZSBjbGFpbWVkIHRvdGFsIGlzCnByb3ZhYmx5IG1vbm90b25pYy4AAAAAAAAAAAAAC1VzZXJQcm9maWxlAAAAAAcAAAAAAAAAB2FkZHJlc3MAAAAAEwAAAAAAAAAJYm90X2NvdW50AAAAAAAABAAAAAAAAAALY2xhaW1lZF9hbXQAAAAACwAAAG9UaGUgdXNlcm5hbWUgZXhhY3RseSBhcyB0aGUgdXNlciByZWdpc3RlcmVkIGl0LCBjYXNpbmcgcHJlc2VydmVkCigjMzczKS4gTmV2ZXIgdXNlZCBmb3IgdW5pcXVlbmVzcyBjb21wYXJpc29ucy4AAAAADGRpc3BsYXlfbmFtZQAAABAAAAAAAAAADXJlZ2lzdGVyZWRfYXQAAAAAAAAGAAAAAAAAAAx0b3RhbF9wb2ludHMAAAAGAAAAnE5vcm1hbGl6ZWQgKEFTQ0lJLWxvd2VyY2FzZWQpIHVzZXJuYW1lIOKAlCB0aGUgY2Fub25pY2FsIGlkZW50aXR5IHVzZWQKZm9yIHVuaXF1ZW5lc3MgKCMzNzMpLiBEaXNwbGF5IHRoZSBvcmlnaW5hbCBjYXNpbmcgdmlhCltgVXNlclByb2ZpbGU6OmRpc3BsYXlfbmFtZWBdLgAAAAh1c2VybmFtZQAAABA=",
         "AAAAAAAAAOFBZGQgbmV3bHkgY2xhaW1lZCBBTVQgKGluIHRva2VuIGJhc2UgdW5pdHMsIGBpMTI4YCBwZXIgU0VQLTQxIGNvbnZlbnRpb24pCnRvIGB1c2VyYCdzIGN1bXVsYXRpdmUgYGNsYWltZWRfYW10YC4gUmVqZWN0cyBuZWdhdGl2ZSBhbW91bnRzIHdpdGgKW2BSZWdpc3RyeUVycm9yOjpOZWdhdGl2ZUFtb3VudGBdIHNvIGBjbGFpbWVkX2FtdGAgaXMgbW9ub3RvbmljYWxseQpub24tZGVjcmVhc2luZy4AAAAAAAAPYWRkX2NsYWltZWRfYW10AAAAAAIAAAAAAAAABHVzZXIAAAATAAAAAAAAAAZhbW91bnQAAAAAAAsAAAABAAAD6QAAA+0AAAAAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
+        "AAAAAAAAAAAAAAAPZ2V0X2NsYWltZWRfYW10AAAAAAEAAAAAAAAABHVzZXIAAAATAAAAAQAAA+kAAAALAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
         "AAAAAAAAARtUb3AgdXNlcnMgYnkgcG9pbnRzLCBoaWdoZXN0IGZpcnN0LiBSZWFkcyB0aGUgbWFpbnRhaW5lZCBgVG9wVXNlcnNgCmxpc3QgYW5kIGh5ZHJhdGVzIGF0IG1vc3QgYG1pbihsaW1pdCwgTEVBREVSQk9BUkRfU0laRSlgIHByb2ZpbGVzLCBzbyB0aGUKY29zdCBkb2VzIG5vdCBkZXBlbmQgb24gdGhlIHRvdGFsIG51bWJlciBvZiB1c2Vycy4gRXF1YWwgdG90YWxzIGFyZQpvcmRlcmVkIGJ5IHdobyByZWFjaGVkIHRoZSB0b3RhbCBmaXJzdCAoZWFybGllciB3aW5zKSwgZGV0ZXJtaW5pc3RpY2FsbHkuAAAAAA9nZXRfbGVhZGVyYm9hcmQAAAAAAQAAAAAAAAAFbGltaXQAAAAAAAAEAAAAAQAAA+oAAAfQAAAAC1VzZXJQcm9maWxlAA==",
         "AAAAAAAAAI5GZXRjaCBwcm9maWxlcyBmb3IgdXAgdG8gYE1BWF9VU0VSU19CQVRDSGAgYWRkcmVzc2VzIGluIGEgc2luZ2xlIGNhbGwsCmluIHRoZSBzYW1lIG9yZGVyIGFzIGBhZGRyZXNzZXNgLiBVbnJlZ2lzdGVyZWQgYWRkcmVzc2VzIG1hcCB0byBgTm9uZWAuAAAAAAAPZ2V0X3VzZXJzX2JhdGNoAAAAAAEAAAAAAAAACWFkZHJlc3NlcwAAAAAAA+oAAAATAAAAAQAAA+kAAAPqAAAD6AAAB9AAAAALVXNlclByb2ZpbGUAAAAH0AAAAA1SZWdpc3RyeUVycm9yAAAA",
-        "AAAABAAAAAAAAAAAAAAADVJlZ2lzdHJ5RXJyb3IAAAAAAAAKAAAAAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAAEUFscmVhZHlSZWdpc3RlcmVkAAAAAAAAAgAAAAAAAAANVXNlcm5hbWVUYWtlbgAAAAAAAAMAAAAAAAAADU5vdFJlZ2lzdGVyZWQAAAAAAAAEAAAAAAAAAAxVbmF1dGhvcml6ZWQAAAAFAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAABgAAADNUaGUgcmVnaXN0ZXJlZC11c2VyIGNvdW50ZXIgaGFzIHJlYWNoZWQgYHUzMjo6TUFYYC4AAAAACE92ZXJmbG93AAAABwAAAEdNb3JlIHRoYW4gYE1BWF9VU0VSU19CQVRDSGAgYWRkcmVzc2VzIHdlcmUgcGFzc2VkIHRvIGBnZXRfdXNlcnNfYmF0Y2hgLgAAAAANQmF0Y2hUb29MYXJnZQAAAAAAAAgAAAAsTmVnYXRpdmUgYW1vdW50IHBhc3NlZCB0byBgYWRkX2NsYWltZWRfYW10YC4AAAAOTmVnYXRpdmVBbW91bnQAAAAAAAkAAABKYGFjY2VwdF9hZG1pbmAgb3IgYGNhbmNlbF9hZG1pbl90cmFuc2ZlcmAgY2FsbGVkIHdpdGggbm8gcGVuZGluZyB0cmFuc2Zlci4AAAAAAA5Ob1BlbmRpbmdBZG1pbgAAAAAACg==",
+        "AAAABAAAAAAAAAAAAAAADVJlZ2lzdHJ5RXJyb3IAAAAAAAALAAAAAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAEAAAAAAAAAEUFscmVhZHlSZWdpc3RlcmVkAAAAAAAAAgAAAAAAAAANVXNlcm5hbWVUYWtlbgAAAAAAAAMAAAAAAAAADU5vdFJlZ2lzdGVyZWQAAAAAAAAEAAAAAAAAAAxVbmF1dGhvcml6ZWQAAAAFAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAABgAAAFxUaGUgcmVnaXN0ZXJlZC11c2VyIGNvdW50ZXIgaGFzIHJlYWNoZWQgYHUzMjo6TUFYYCwgb3IgYSBwb2ludHMgdXBkYXRlCndvdWxkIG92ZXJmbG93IGB1NjRgLgAAAAhPdmVyZmxvdwAAAAcAAABHTW9yZSB0aGFuIGBNQVhfVVNFUlNfQkFUQ0hgIGFkZHJlc3NlcyB3ZXJlIHBhc3NlZCB0byBgZ2V0X3VzZXJzX2JhdGNoYC4AAAAADUJhdGNoVG9vTGFyZ2UAAAAAAAAIAAAALE5lZ2F0aXZlIGFtb3VudCBwYXNzZWQgdG8gYGFkZF9jbGFpbWVkX2FtdGAuAAAADk5lZ2F0aXZlQW1vdW50AAAAAAAJAAAASmBhY2NlcHRfYWRtaW5gIG9yIGBjYW5jZWxfYWRtaW5fdHJhbnNmZXJgIGNhbGxlZCB3aXRoIG5vIHBlbmRpbmcgdHJhbnNmZXIuAAAAAAAOTm9QZW5kaW5nQWRtaW4AAAAAAAoAAABDQSBzaW5nbGUgYGFkZF9wb2ludHNgIHVwZGF0ZSBleGNlZWRlZCBgTUFYX1BPSU5UU19QRVJfQ0FMTGAgKCMzNjMpLgAAAAARSW1wbGF1c2libGVQb2ludHMAAAAAAAAL",
+        "AAAAAQAAAAAAAAAAAAAADVVzZXJUb21ic3RvbmUAAAAAAAAFAAAAAAAAAAdhZGRyZXNzAAAAABMAAAAAAAAAC2NsYWltZWRfYW10AAAAAAsAAAAAAAAADHRvdGFsX3BvaW50cwAAAAYAAAAAAAAAD3VucmVnaXN0ZXJlZF9hdAAAAAAGAAAAAAAAAAh1c2VybmFtZQAAABA=",
         "AAAAAAAAAc9Sb2xsIHRoZSByZWdpc3RyeSBvdmVyIHRvIHRoZSBuZXh0IHNlYXNvbiAoIzM3MSkuIEFkbWluLW9ubHkuCgpJbmNyZW1lbnRzIHRoZSBzZWFzb24gY291bnRlciBhbmQgc3RhcnRzIHRoZSBuZXcgc2Vhc29uJ3MgbGVhZGVyYm9hcmQKZW1wdHk6IHNlYXNvbiBwb2ludHMgYXJlIHN0b3JlZCB1bmRlciBgRGF0YUtleTo6U2Vhc29uUG9pbnRzKHNlYXNvbiwKdXNlcilgLCBzbyBhIGZyZXNoIHNlYXNvbiBudW1iZXIgbWVhbnMgZXZlcnkgdXNlciBzdGFydHMgZnJvbSB6ZXJvCndoaWxlIGxpZmV0aW1lIGB0b3RhbF9wb2ludHNgIGFuZCBldmVyeSBwYXN0IHNlYXNvbidzIGJvYXJkCihgU2Vhc29uVG9wYC9gU2Vhc29uUG9pbnRzYCBrZXllZCBieSB0aGUgb2xkIG51bWJlcikgcmVtYWluIGludGFjdCBhbmQKcXVlcnlhYmxlLiBSZXR1cm5zIHRoZSBuZXcgc2Vhc29uIG51bWJlciBhbmQgZW1pdHMgYG5ld3NlYXNvbmAuAAAAABBzdGFydF9uZXdfc2Vhc29uAAAAAAAAAAEAAAPpAAAABAAAB9AAAAANUmVnaXN0cnlFcnJvcgAAAA==",
         "AAAAAAAAAAAAAAATZGVjcmVtZW50X2JvdF9jb3VudAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=",
         "AAAAAAAAAAAAAAATaW5jcmVtZW50X2JvdF9jb3VudAAAAAABAAAAAAAAAAR1c2VyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAfQAAAADVJlZ2lzdHJ5RXJyb3IAAAA=",
@@ -664,17 +827,24 @@ export class Client extends ContractClient {
         get_user: this.txFromJSON<Result<UserProfile>>,
         register: this.txFromJSON<Result<void>>,
         get_admin: this.txFromJSON<Result<string>>,
+        get_users: this.txFromJSON<Array<string>>,
         set_admin: this.txFromJSON<Result<void>>,
         add_points: this.txFromJSON<Result<void>>,
+        get_points: this.txFromJSON<Result<u64>>,
         get_season: this.txFromJSON<u32>,
         initialize: this.txFromJSON<Result<void>>,
+        set_points: this.txFromJSON<Result<void>>,
+        unregister: this.txFromJSON<Result<void>>,
         get_writers: this.txFromJSON<Option<Writers>>,
         set_writers: this.txFromJSON<Result<void>>,
         total_users: this.txFromJSON<u32>,
         accept_admin: this.txFromJSON<Result<void>>,
+        bump_profile: this.txFromJSON<Result<void>>,
+        get_bot_count: this.txFromJSON<Result<u32>>,
         is_registered: this.txFromJSON<boolean>,
         pending_admin: this.txFromJSON<Option<string>>,
         add_claimed_amt: this.txFromJSON<Result<void>>,
+        get_claimed_amt: this.txFromJSON<Result<i128>>,
         get_leaderboard: this.txFromJSON<Array<UserProfile>>,
         get_users_batch: this.txFromJSON<Result<Array<Option<UserProfile>>>>,
         start_new_season: this.txFromJSON<Result<u32>>,

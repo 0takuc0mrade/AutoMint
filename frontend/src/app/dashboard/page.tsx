@@ -3,6 +3,7 @@
 import { useWallet } from "@/hooks/useWallet";
 import {
   useRegistered,
+  useProfile,
   useProfilePoints,
   useBots,
   useAccrualState,
@@ -43,6 +44,11 @@ export default function DashboardPage() {
     refetch: refetchProfilePoints,
     isRefetching: isProfilePointsRefetching,
   } = useProfilePoints();
+
+  // #373: the greeting prefers `display_name` (original casing) over the
+  // normalized `username`, so the profile record is still needed alongside
+  // the points-only query used by the counter.
+  const { data: profile } = useProfile();
 
   const {
     data: botIds,
@@ -263,7 +269,6 @@ export default function DashboardPage() {
       <div className="mb-8">
         <h1 className="font-display text-3xl font-bold text-text sm:text-4xl">
           Welcome back, {profile?.display_name || profile?.username || "User"}!
-          Welcome back!
         </h1>
         <p className="mt-2 text-sm text-muted">
           Track your points and manage your AI bot collection.

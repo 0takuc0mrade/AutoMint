@@ -265,6 +265,8 @@ Query the token symbol. Returns `TokenError::NotInitialized` if the contract is 
 | `InvalidExpiration` | 11 | `approve`'s `expiration_ledger` is in the past (for a non-zero amount) or beyond the maximum allowance window |
 | `InvalidMetadata` | 12 | Name or symbol is empty |
 | `NoPendingAdmin` | 13 | No administrator transfer is pending |
+| `LengthMismatch` | 14 | `transfer_batch` received different counts of recipients and amounts |
+| `BatchTooLarge` | 15 | `transfer_batch` received more than `MAX_BATCH_SIZE` (100) recipients |
 | `Paused` | 1000 | Contract is paused |
 
 ---

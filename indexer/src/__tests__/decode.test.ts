@@ -244,12 +244,12 @@ describe("decodeRawEvent", () => {
     expect(toNum(data[1])).toBe(200);
   });
 
-  it("marketplace.listed: topics=[seller, listing_id], data=[bot_id, price(i128)]", () => {
+  it("marketplace.listed: topics=[seller, listing_id], data=[bot_id, price(i128), currency]", () => {
     const ev = decodeRawEvent(
       makeRawEvent({
         contractId: CMAR,
         topics: [sym("listed"), addr(G1), u64(9)],
-        value: vec([u64(3), i128(5000000000)]),
+        value: vec([u64(3), i128(5000000000), addr(CTOK)]),
       }),
     );
     expect(ev.event).toBe("listed");
@@ -258,31 +258,48 @@ describe("decodeRawEvent", () => {
     const data = ev.data as unknown[];
     expect(toNum(data[0])).toBe(3);
     expect(toDecimal(data[1])).toBe("5000000000");
+    expect(data[2]).toBe(CTOK);
   });
 
-  it("marketplace.cancelled: data=bot_id(u64)", () => {
+  it("marketplace.cancel: topics=[seller, listing_id], data=bot_id(u64)", () => {
     const ev = decodeRawEvent(
       makeRawEvent({
         contractId: CMAR,
-        topics: [sym("cancelled"), addr(G1), u64(9)],
+        topics: [sym("cancel"), addr(G1), u64(9)],
         value: u64(3),
       }),
     );
-    expect(ev.event).toBe("cancelled");
+    expect(ev.event).toBe("cancel");
     expect(toNum(ev.data)).toBe(3);
   });
 
-  it("marketplace.bought: data=[bot_id, price(i128)]", () => {
+  it("marketplace.sold: topics=[seller, buyer], data=[listing_id, bot_id, price(i128), currency]", () => {
     const ev = decodeRawEvent(
       makeRawEvent({
         contractId: CMAR,
-        topics: [sym("bought"), addr(G2), u64(9)],
-        value: vec([u64(3), i128(5000000000)]),
+        topics: [sym("sold"), addr(G1), addr(G2)],
+        value: vec([u64(9), u64(3), i128(5000000000), addr(CTOK)]),
       }),
     );
-    expect(ev.event).toBe("bought");
-    expect(ev.topics[0]).toBe(G2);
-    expect(toDecimal((ev.data as unknown[])[1])).toBe("5000000000");
+    expect(ev.event).toBe("sold");
+    expect(ev.topics[0]).toBe(G1);
+    expect(ev.topics[1]).toBe(G2);
+    const data = ev.data as unknown[];
+    expect(toNum(data[0])).toBe(9);
+    expect(toDecimal(data[2])).toBe("5000000000");
+    expect(data[3]).toBe(CTOK);
+  });
+
+  it("marketplace.price_upd: topics=[seller, listing_id], data=[old_price, new_price]", () => {
+    const ev = decodeRawEvent(
+      makeRawEvent({
+        contractId: CMAR,
+        topics: [sym("price_upd"), addr(G1), u64(9)],
+        value: vec([i128(100), i128(120)]),
+      }),
+    );
+    expect(ev.event).toBe("price_upd");
+    expect(toDecimal((ev.data as unknown[])[1])).toBe("120");
   });
 
   it("token.approve: data=[amount(i128), expiration_ledger(u32)]", () => {
@@ -383,8 +400,8 @@ describe("contractNameFor / makeDecoder", () => {
     const ev = decoder.decode(
       makeRawEvent({
         contractId: CMAR,
-        topics: [sym("bought"), addr(G2), u64(1)],
-        value: vec([u64(1), i128(5)]),
+        topics: [sym("sold"), addr(G1), addr(G2)],
+        value: vec([u64(1), u64(1), i128(5), addr(CTOK)]),
       }),
     );
     expect(ev.contract).toBe("marketplace");

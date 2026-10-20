@@ -361,6 +361,7 @@ pub enum OfferStatus {
 | `TooManyOffers` | 31 | The bot already carries 25 open offers |
 | `InvalidAmount` | 32 | `withdraw_fees` amount is zero or negative |
 | `InsufficientFees` | 33 | `withdraw_fees` amount exceeds the accrued balance |
+| `ActiveListingsExist` | 34 | `set_bot_nft` while any listing still escrows a bot |
 
 ---
 
@@ -368,9 +369,9 @@ pub enum OfferStatus {
 
 The contract emits the following events:
 
-- `listed(seller, listing_id)` with `(bot_id, price)`
-- `cancelled(seller, listing_id)` with `bot_id`
-- `bought(buyer, listing_id)` with `(bot_id, price)`
+- `listed(seller, listing_id)` with `(bot_id, price, currency)`
+- `cancel(seller, listing_id)` with `bot_id`
+- `sold(seller, buyer)` with `(listing_id, bot_id, price, currency)`
 - `offered(buyer, offer_id)` with `(bot_id, amount, expires_at)`
 - `offer_acc(seller, buyer)` with `(offer_id, bot_id, amount)`
 - `offer_cxl(buyer, offer_id)` with `(bot_id, amount, expired: bool)`

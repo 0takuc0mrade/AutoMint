@@ -32,7 +32,12 @@ beforeEach(() => {
   db = new IndexerDb(":memory:");
 });
 
-function insert(contractId: string, topics: unknown[], value: unknown, seq: number): void {
+function insert(
+  contractId: string,
+  topics: unknown[],
+  value: unknown,
+  seq: number,
+): void {
   const raw = makeRawEvent({
     contractId,
     topics: topics as never,
@@ -60,11 +65,26 @@ describe("IndexerDb aggregates", () => {
     insert(CTOK, [sym("mint"), addr(G2)], i128(250), 7);
 
     // Two listings: 500 and 1000.
-    insert(CMAR, [sym("listed"), addr(G1), u64(1)], vec([u64(10), i128(500)]), 8);
-    insert(CMAR, [sym("listed"), addr(G1), u64(2)], vec([u64(11), i128(1000)]), 9);
+    insert(
+      CMAR,
+      [sym("listed"), addr(G1), u64(1)],
+      vec([u64(10), i128(500)]),
+      8,
+    );
+    insert(
+      CMAR,
+      [sym("listed"), addr(G1), u64(2)],
+      vec([u64(11), i128(1000)]),
+      9,
+    );
 
     // Buy listing 1 (price 500).
-    insert(CMAR, [sym("bought"), addr(G2), u64(1)], vec([u64(10), i128(500)]), 10);
+    insert(
+      CMAR,
+      [sym("bought"), addr(G2), u64(1)],
+      vec([u64(10), i128(500)]),
+      10,
+    );
 
     const s = db.summary();
     expect(s.users).toBe(2);
@@ -84,11 +104,42 @@ describe("IndexerDb aggregates", () => {
     expect(db.sumAmtMinted()).toBe((big + big).toString());
   });
 
+  it("reads summary totals from constant-size aggregate rows", () => {
+    insert(CTOK, [sym("mint"), addr(G1)], i128(100), 1);
+    insert(CMAR, [sym("bought"), addr(G2), u64(1)], vec([u64(1), i128(75)]), 2);
+
+    db.raw.prepare("DELETE FROM events").run();
+
+    expect(db.sumAmtMinted()).toBe("100");
+    expect(db.sumVolume()).toBe("75");
+  });
+
+  it("does not double-count aggregate totals when an event is replayed", () => {
+    const raw = makeRawEvent({
+      contractId: CTOK,
+      topics: [sym("mint"), addr(G1)],
+      value: i128(42),
+      ledger: 1001,
+      seq: 1,
+      closedAt: today(),
+    });
+    const event = decoder.decode(raw);
+
+    expect(db.insertEvents([event])).toBe(1);
+    expect(db.insertEvents([event])).toBe(0);
+    expect(db.sumAmtMinted()).toBe("42");
+  });
+
   it("derives daily claims / amt / volume rows", () => {
     insert(CACC, [sym("claim"), addr(G1)], vec([u64(1500), u64(0)]), 1);
     insert(CACC, [sym("claim"), addr(G1)], vec([u64(900), u64(0)]), 2);
     insert(CTOK, [sym("mint"), addr(G1)], i128(1000), 3);
-    insert(CMAR, [sym("bought"), addr(G2), u64(5)], vec([u64(10), i128(777)]), 4);
+    insert(
+      CMAR,
+      [sym("bought"), addr(G2), u64(5)],
+      vec([u64(10), i128(777)]),
+      4,
+    );
 
     const rows = db.daily(7);
     const todayRow = rows[rows.length - 1];
@@ -98,8 +149,18 @@ describe("IndexerDb aggregates", () => {
   });
 
   it("tracks listing lifecycle through cancel", () => {
-    insert(CMAR, [sym("listed"), addr(G1), u64(7)], vec([u64(20), i128(600)]), 1);
-    insert(CMAR, [sym("listed"), addr(G1), u64(8)], vec([u64(21), i128(900)]), 2);
+    insert(
+      CMAR,
+      [sym("listed"), addr(G1), u64(7)],
+      vec([u64(20), i128(600)]),
+      1,
+    );
+    insert(
+      CMAR,
+      [sym("listed"), addr(G1), u64(8)],
+      vec([u64(21), i128(900)]),
+      2,
+    );
     insert(CMAR, [sym("cancelled"), addr(G1), u64(8)], u64(21), 3);
 
     expect(db.countActiveListings()).toBe(1);
@@ -109,11 +170,23 @@ describe("IndexerDb aggregates", () => {
   it("keeps distinct full-width listing IDs distinct in SQLite", () => {
     const firstId = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
     const secondId = firstId + 1n;
-    insert(CMAR, [sym("listed"), addr(G1), u64(firstId)], vec([u64(firstId), i128(600)]), 1);
-    insert(CMAR, [sym("listed"), addr(G1), u64(secondId)], vec([u64(secondId), i128(900)]), 2);
+    insert(
+      CMAR,
+      [sym("listed"), addr(G1), u64(firstId)],
+      vec([u64(firstId), i128(600)]),
+      1,
+    );
+    insert(
+      CMAR,
+      [sym("listed"), addr(G1), u64(secondId)],
+      vec([u64(secondId), i128(900)]),
+      2,
+    );
 
     const rows = db.raw
-      .prepare("SELECT listing_id, typeof(listing_id) AS storage_type FROM listings ORDER BY rowid")
+      .prepare(
+        "SELECT listing_id, typeof(listing_id) AS storage_type FROM listings ORDER BY rowid",
+      )
       .all() as { listing_id: string; storage_type: string }[];
     expect(rows).toEqual([
       { listing_id: firstId.toString(), storage_type: "text" },
@@ -123,8 +196,11 @@ describe("IndexerDb aggregates", () => {
 
     insert(CMAR, [sym("cancelled"), addr(G1), u64(firstId)], u64(firstId), 3);
     expect(db.countActiveListings()).toBe(1);
-    expect(db.raw.prepare("SELECT status FROM listings WHERE listing_id = ?").get(firstId.toString()))
-      .toEqual({ status: "cancelled" });
+    expect(
+      db.raw
+        .prepare("SELECT status FROM listings WHERE listing_id = ?")
+        .get(firstId.toString()),
+    ).toEqual({ status: "cancelled" });
   });
 
   it("rejects events from failed contract calls at the DB layer is not needed — poller filters", () => {

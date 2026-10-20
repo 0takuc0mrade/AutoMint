@@ -26,10 +26,11 @@ const decoder = makeDecoder(config);
 let db: IndexerDb;
 let listen: Server;
 let base: string;
+let extraHealth: (() => Record<string, unknown>) | undefined;
 
 beforeEach(async () => {
   db = new IndexerDb(":memory:");
-  const app = createApiServer({ db, config });
+  const app = createApiServer({ db, config, extraHealth });
   const srv = app.listen(0);
   await new Promise<void>((resolve) => srv.once("listening", resolve));
   const port = (srv.address() as AddressInfo).port;
@@ -40,6 +41,7 @@ beforeEach(async () => {
 afterEach(() => {
   listen.close();
   db.close();
+  extraHealth = undefined;
 });
 
 function seed(): void {
@@ -139,5 +141,36 @@ describe("aggregate API", () => {
     expect(body.ok).toBe(true);
     expect(body.checkpoint_ledger).toBe(5008);
     expect(body.contracts.token).toBe(config.contracts.token);
+  });
+
+  it("GET /api/health distinguishes process liveness from stale readiness", async () => {
+    extraHealth = () => ({
+      ok: false,
+      liveness: { ok: true },
+      readiness: {
+        ok: false,
+        stale: true,
+        last_successful_poll_at: null,
+        last_failure_at: "2026-10-20T10:00:00.000Z",
+        last_error: "RPC unavailable",
+      },
+    });
+
+    // Recreate the server with the health callback configured.
+    listen.close();
+    const app = createApiServer({ db, config, extraHealth });
+    const srv = app.listen(0);
+    await new Promise<void>((resolve) => srv.once("listening", resolve));
+    listen = srv;
+    base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+
+    const body = await fetch(`${base}/api/health`).then((res) => res.json());
+    expect(body.ok).toBe(false);
+    expect(body.liveness.ok).toBe(true);
+    expect(body.readiness).toMatchObject({
+      ok: false,
+      stale: true,
+      last_error: "RPC unavailable",
+    });
   });
 });

@@ -34,12 +34,30 @@ export interface PollResult {
   latestLedger: number;
 }
 
+export interface PollHealth {
+  liveness: { ok: true };
+  readiness: {
+    ok: boolean;
+    stale: boolean;
+    last_successful_poll_at: string | null;
+    last_failure_at: string | null;
+    last_error: string | null;
+  };
+  ok: boolean;
+}
+
 export class Poller {
   private readonly rpc: RpcClient;
   private readonly db: IndexerDb;
   private readonly config: ContractConfig;
   private readonly defaultStartLedger: number;
-  private readonly log: (message: string, meta?: Record<string, unknown>) => void;
+  private readonly log: (
+    message: string,
+    meta?: Record<string, unknown>,
+  ) => void;
+  private lastSuccessfulPollAt: number | null = null;
+  private lastFailureAt: number | null = null;
+  private lastError: string | null = null;
 
   constructor(opts: PollerOptions) {
     this.rpc = opts.rpc;
@@ -58,9 +76,10 @@ export class Poller {
    * Run one poll cycle. Throws on RPC failure (caller decides whether to
    * retry/sleep); returns counts for observability.
    */
-  async pollOnce(): Promise<PollResult> {
+  private async pollOnceInternal(): Promise<PollResult> {
     const checkpoint = await this.currentCheckpoint();
-    const startLedger = checkpoint === 0 ? this.defaultStartLedger : checkpoint + 1;
+    const startLedger =
+      checkpoint === 0 ? this.defaultStartLedger : checkpoint + 1;
 
     const contractIds = Object.values(this.config.contracts);
     this.log("polling", {
@@ -110,6 +129,47 @@ export class Poller {
     });
 
     return { fetched: events.length, inserted, skipped, latestLedger };
+  }
+
+  async pollOnce(): Promise<PollResult> {
+    try {
+      const result = await this.pollOnceInternal();
+      this.lastSuccessfulPollAt = Date.now();
+      return result;
+    } catch (error) {
+      this.lastFailureAt = Date.now();
+      this.lastError = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
+  }
+
+  health(staleAfterMs: number, now = Date.now()): PollHealth {
+    const stale =
+      this.lastSuccessfulPollAt === null ||
+      now - this.lastSuccessfulPollAt > staleAfterMs;
+    const failedSinceSuccess =
+      this.lastFailureAt !== null &&
+      (this.lastSuccessfulPollAt === null ||
+        this.lastFailureAt > this.lastSuccessfulPollAt);
+    const ready = !stale && !failedSinceSuccess;
+
+    return {
+      liveness: { ok: true },
+      readiness: {
+        ok: ready,
+        stale,
+        last_successful_poll_at:
+          this.lastSuccessfulPollAt === null
+            ? null
+            : new Date(this.lastSuccessfulPollAt).toISOString(),
+        last_failure_at:
+          this.lastFailureAt === null
+            ? null
+            : new Date(this.lastFailureAt).toISOString(),
+        last_error: this.lastError,
+      },
+      ok: ready,
+    };
   }
 
   /**

@@ -1,10 +1,4 @@
-import {
-  Contract,
-  TransactionBuilder,
-  scValToNative,
-  xdr,
-  SorobanRpc,
-} from "@stellar/stellar-sdk";
+import { Contract, TransactionBuilder, scValToNative, xdr, SorobanRpc } from "@stellar/stellar-sdk";
 import {
   BASE_FEE,
   HORIZON_URL,
@@ -21,8 +15,8 @@ import {
   TxTimeoutError,
   UserRejectedError,
 } from "./stellar";
-import { withRetry } from "./rpcRetry";
 import { useTxStore, type TxRecord } from "@/store/txStore";
+import { useWalletStore } from "@/store/walletStore";
 
 /**
  * Multiplier applied to the assembled resource fee to add a safety buffer.
@@ -139,7 +133,7 @@ export function summarizeArgs(args: xdr.ScVal[]): string {
         const text =
           typeof native === "object" && native !== null
             ? JSON.stringify(native, (_key, value) =>
-                typeof value === "bigint" ? value.toString() : value
+                typeof value === "bigint" ? value.toString() : value,
               )
             : String(native);
         // Keeps both ends of long values (addresses, contract IDs) recognisable.
@@ -170,16 +164,18 @@ function buildExplorerUrl(hash: string): string {
  */
 async function submitTxWithHash(
   signedXdr: string,
-  onAccepted?: (hash: string) => void
+  onAccepted?: (hash: string) => void,
 ): Promise<{ hash: string; result: unknown }> {
   const server = getServer();
 
   // Rebuild to validate the XDR
   let txToSend: unknown = signedXdr;
   try {
-    const maybeFromXdr = (TransactionBuilder as unknown as {
-      fromXDR?: (xdr: string, passphrase: string) => unknown;
-    }).fromXDR;
+    const maybeFromXdr = (
+      TransactionBuilder as unknown as {
+        fromXDR?: (xdr: string, passphrase: string) => unknown;
+      }
+    ).fromXDR;
     if (typeof maybeFromXdr === "function") {
       txToSend = maybeFromXdr.call(TransactionBuilder, signedXdr, STELLAR_NETWORK_PASSPHRASE);
     } else {
@@ -191,7 +187,7 @@ async function submitTxWithHash(
         try {
           txToSend = new (TxClass as new (x: string, p: string) => unknown)(
             signedXdr,
-            STELLAR_NETWORK_PASSPHRASE
+            STELLAR_NETWORK_PASSPHRASE,
           );
         } catch {
           txToSend = signedXdr;
@@ -204,9 +200,11 @@ async function submitTxWithHash(
 
   let sendRes: SorobanRpc.Api.SendTransactionResponse;
   try {
-    sendRes = await (server as unknown as {
-      sendTransaction: (tx: unknown) => Promise<SorobanRpc.Api.SendTransactionResponse>;
-    }).sendTransaction(txToSend as never);
+    sendRes = await (
+      server as unknown as {
+        sendTransaction: (tx: unknown) => Promise<SorobanRpc.Api.SendTransactionResponse>;
+      }
+    ).sendTransaction(txToSend as never);
   } catch (err) {
     throw err instanceof Error ? err : new Error(String(err));
   }
@@ -215,7 +213,7 @@ async function submitTxWithHash(
     const r = sendRes as unknown as { errorResultXdr?: string; status: string };
     throw new TxSendFailedError(
       `Transaction submission failed: ${r.errorResultXdr ?? r.status}`,
-      r.errorResultXdr
+      r.errorResultXdr,
     );
   }
 
@@ -243,7 +241,7 @@ async function submitTxWithHash(
  */
 async function pollSubmitted(
   server: SorobanRpc.Server,
-  hash: string
+  hash: string,
 ): Promise<{ hash: string; result: unknown }> {
   const timeoutMs = (TX_TIMEOUT + 30) * 1000;
   const start = Date.now();
@@ -291,10 +289,7 @@ async function pollSubmitted(
       useTxStore
         .getState()
         .resolveTransaction(hash, "failed", typeof diag === "string" ? diag : undefined);
-      throw new TxFailedError(
-        `Transaction failed on-chain: ${diag ?? "unknown"}`,
-        diag
-      );
+      throw new TxFailedError(`Transaction failed on-chain: ${diag ?? "unknown"}`, diag);
     }
 
     await new Promise((r) => setTimeout(r, delayMs));
@@ -325,16 +320,12 @@ async function pollSubmitted(
  * @throws TxFailedError when the transaction fails on-chain
  * @throws Error for simulation, build, or other failures
  */
-export async function executeTransaction(
-  params: ExecuteTransactionParams
-): Promise<unknown> {
-  const {
-    contractId,
-    method,
-    args,
-    sourceAddress,
-    onStatus,
-  } = params;
+export async function executeTransaction(params: ExecuteTransactionParams): Promise<unknown> {
+  const { contractId, method, args, sourceAddress, onStatus } = params;
+
+  if (useWalletStore.getState().networkMismatch) {
+    throw new Error("Wrong network: switch Freighter to the configured Stellar network.");
+  }
 
   const state = getSequenceState(sourceAddress);
 
@@ -347,7 +338,7 @@ export async function executeTransaction(
           args,
           sourceAddress,
           onStatus,
-          state
+          state,
         );
         resolve(result);
       } catch (error) {
@@ -369,7 +360,7 @@ async function executeTransactionInternal(
   args: xdr.ScVal[],
   sourceAddress: string,
   onStatus: ((status: TransactionStatus) => void) | undefined,
-  sequenceState: SequenceState
+  sequenceState: SequenceState,
 ): Promise<unknown> {
   onStatus?.({ stage: "building" });
 
@@ -391,9 +382,7 @@ async function executeTransactionInternal(
 
   onStatus?.({ stage: "simulating" });
 
-  const simResult = await rpcCall((server) =>
-    withRetry(() => server.simulateTransaction(tx))
-  );
+  const simResult = await rpcCall((server) => server.simulateTransaction(tx));
 
   if (SorobanRpc.Api.isSimulationError(simResult)) {
     const errorMsg = `Simulation failed for ${method}: ${simResult.error}`;
@@ -462,16 +451,11 @@ async function executeTransactionInternal(
     return result;
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    
+
     // Check if this is a BAD_SEQ error
-    if (
-      error instanceof TxSendFailedError &&
-      errorMsg.includes("BAD_SEQ")
-    ) {
+    if (error instanceof TxSendFailedError && errorMsg.includes("BAD_SEQ")) {
       // Retry once with refreshed account state
-      const refreshedAccount = await rpcCall((server) =>
-        server.getAccount(sourceAddress)
-      );
+      const refreshedAccount = await rpcCall((server) => server.getAccount(sourceAddress));
       sequenceState.current = Number(refreshedAccount.sequenceNumber());
       sequenceState.pending = sequenceState.current + 1;
 
@@ -488,9 +472,7 @@ async function executeTransactionInternal(
 
       onStatus?.({ stage: "simulating" });
 
-      const retrySimResult = await rpcCall((server) =>
-        withRetry(() => server.simulateTransaction(retryTx))
-      );
+      const retrySimResult = await rpcCall((server) => server.simulateTransaction(retryTx));
 
       if (SorobanRpc.Api.isSimulationError(retrySimResult)) {
         const retryError = `Simulation failed on retry for ${method}: ${retrySimResult.error}`;
@@ -500,10 +482,7 @@ async function executeTransactionInternal(
 
       onStatus?.({ stage: "assembling" });
 
-      const retryAssembled = SorobanRpc.assembleTransaction(
-        retryTx,
-        retrySimResult
-      ).build();
+      const retryAssembled = SorobanRpc.assembleTransaction(retryTx, retrySimResult).build();
 
       if (FEE_MULTIPLIER !== 1.0) {
         const baseFeeNum = parseInt(retryAssembled.fee, 10);
@@ -512,7 +491,7 @@ async function executeTransactionInternal(
       }
 
       const retryXdr = retryAssembled.toXDR();
-      
+
       onStatus?.({ stage: "signing" });
       const retrySignedXdr = await signTx(retryXdr, sourceAddress);
 
@@ -520,7 +499,7 @@ async function executeTransactionInternal(
 
       const { hash: retryHash, result: retryResult } = await submitTxWithHash(
         retrySignedXdr,
-        onAccepted
+        onAccepted,
       );
 
       sequenceState.current = sequenceState.pending;
@@ -536,13 +515,12 @@ async function executeTransactionInternal(
   }
 }
 
-
 /**
  * Interpret one `getTransaction` response: a final outcome for SUCCESS /
  * FAILED, `null` while the transaction is still unresolved (NOT_FOUND).
  */
 function toResumeOutcome(
-  result: SorobanRpc.Api.GetTransactionResponse
+  result: SorobanRpc.Api.GetTransactionResponse,
 ): { status: "success" } | { status: "failed"; error: string } | null {
   const status = (result as unknown as { status: string }).status;
   if (status === "SUCCESS") return { status: "success" };
@@ -577,7 +555,7 @@ async function resumeOne(record: TxRecord): Promise<void> {
     try {
       // getTransaction is idempotent, so it gets retry + endpoint failover.
       const outcome = toResumeOutcome(
-        await rpcCall((server) => server.getTransaction(record.hash))
+        await rpcCall((server) => server.getTransaction(record.hash)),
       );
       if (outcome?.status === "success") {
         resolveTransaction(record.hash, "success");
@@ -619,7 +597,7 @@ export async function resumePendingTransactions(): Promise<void> {
       } finally {
         polling.delete(record.hash);
       }
-    })
+    }),
   );
 }
 

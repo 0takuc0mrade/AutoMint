@@ -82,6 +82,7 @@ export interface IndexerRuntime {
   db: IndexerDb;
   poller: Poller;
   config: ContractConfig;
+  extraHealth: () => Record<string, unknown>;
 }
 
 export function buildRuntime(
@@ -112,11 +113,21 @@ export function buildRuntime(
     defaultStartLedger: startLedger,
   });
 
-  return { db, poller, config };
+  const pollIntervalMs = Number(
+    process.env.AM_POLL_INTERVAL_MS ?? DEFAULT_POLL_INTERVAL_MS,
+  );
+  const staleAfterMs = Math.max(pollIntervalMs * 3, 30_000);
+
+  return {
+    db,
+    poller,
+    config,
+    extraHealth: () => ({ ...poller.health(staleAfterMs) }),
+  };
 }
 
 export async function main(): Promise<void> {
-  const { db, poller, config } = buildRuntime();
+  const { db, poller, config, extraHealth } = buildRuntime();
 
   const port = validatePositiveInt(process.env.AM_PORT, "AM_PORT", DEFAULT_PORT);
   const intervalMs = validatePositiveInt(process.env.AM_POLL_INTERVAL_MS, "AM_POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL_MS);
@@ -132,12 +143,16 @@ export async function main(): Promise<void> {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
-  const app = createApiServer({ db, config });
+  const app = createApiServer({ db, config, extraHealth });
   const server = app.listen(port, () => {
-    console.log(`[indexer] aggregate API + dashboard on http://localhost:${port}`);
-    console.log(`[indexer] network=${config.network} contracts=${
-      Object.values(config.contracts).join(",")
-    }`);
+    console.log(
+      `[indexer] aggregate API + dashboard on http://localhost:${port}`,
+    );
+    console.log(
+      `[indexer] network=${config.network} contracts=${Object.values(
+        config.contracts,
+      ).join(",")}`,
+    );
   });
 
   try {
@@ -152,7 +167,8 @@ export async function main(): Promise<void> {
 // Invoke `main()` when this module is executed directly (not imported):
 //   node dist/index.js   (npm start)
 //   tsx src/index.ts     (npm run dev)
-const isEntry = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isEntry =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
   main().catch((error) => {
     console.error("[indexer] fatal:", error);

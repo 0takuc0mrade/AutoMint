@@ -122,9 +122,7 @@ function noteRpcSuccess(): void {
  * Never wrap `sendTransaction` in this helper — submissions are not
  * idempotent and must be attempted exactly once (#454).
  */
-export async function rpcCall<T>(
-  fn: (server: SorobanRpc.Server) => Promise<T>
-): Promise<T> {
+export async function rpcCall<T>(fn: (server: SorobanRpc.Server) => Promise<T>): Promise<T> {
   return withRetry(
     async () => {
       try {
@@ -136,7 +134,7 @@ export async function rpcCall<T>(
         throw error;
       }
     },
-    { idempotent: true }
+    { idempotent: true },
   );
 }
 
@@ -184,14 +182,10 @@ export async function connectFreighter(): Promise<{
   try {
     connected = await freighterIsConnected();
   } catch {
-    throw new Error(
-      "Freighter wallet extension is not installed or could not be detected."
-    );
+    throw new Error("Freighter wallet extension is not installed or could not be detected.");
   }
   if (connected?.error || !connected?.isConnected) {
-    throw new Error(
-      "Freighter wallet extension is not installed or could not be detected."
-    );
+    throw new Error("Freighter wallet extension is not installed or could not be detected.");
   }
 
   // 2. Request access — this opens the authorization popup.
@@ -307,11 +301,7 @@ async function getAccountCached(sourceAddress: string): Promise<CachedAccount> {
  * Args are XDR-encoded when possible so distinct ScVals never collide;
  * test doubles without `toXDR` fall back to JSON.
  */
-function simulationKey(
-  contractId: string,
-  method: string,
-  args: xdr.ScVal[]
-): string {
+function simulationKey(contractId: string, method: string, args: xdr.ScVal[]): string {
   const parts = args.map((arg) => {
     try {
       const maybe = arg as unknown as {
@@ -359,7 +349,7 @@ export async function simulateContractCall<T = unknown>(
   contractId: string,
   method: string,
   args: xdr.ScVal[],
-  sourceAddress: string
+  sourceAddress: string,
 ): Promise<T | undefined> {
   // Deduplicate concurrent identical simulations (#482): callers sharing a
   // (contractId, method, args) key await the same in-flight promise.
@@ -430,7 +420,7 @@ export async function buildPreparedTx(
   contractId: string,
   method: string,
   args: xdr.ScVal[],
-  sourceAddress: string
+  sourceAddress: string,
 ): Promise<string> {
   const contract = new Contract(contractId);
   const account = await rpcCall((server) => server.getAccount(sourceAddress));
@@ -562,6 +552,26 @@ export async function signTx(xdr: string, address?: string): Promise<string> {
     }
   }
 
+  // Fail closed on the live extension state. The store guard prevents work
+  // when a mismatch is already known; this re-check closes the race where the
+  // user switches networks while a transaction is being assembled.
+  let liveNetwork: Awaited<ReturnType<typeof freighterGetNetwork>>;
+  try {
+    liveNetwork = await freighterGetNetwork();
+  } catch {
+    throw new Error("Could not verify wallet network before signing.");
+  }
+
+  if (liveNetwork?.error || !liveNetwork?.networkPassphrase) {
+    throw new Error("Could not verify wallet network before signing.");
+  }
+
+  const networkMismatch = liveNetwork.networkPassphrase !== STELLAR_NETWORK_PASSPHRASE;
+  useWalletStore.getState().setNetworkMismatch(networkMismatch);
+  if (networkMismatch) {
+    throw new Error("Wrong network: switch Freighter to the configured Stellar network.");
+  }
+
   let result: unknown;
   try {
     // Freighter v3 expects (xdr, { networkPassphrase, address })
@@ -569,7 +579,7 @@ export async function signTx(xdr: string, address?: string): Promise<string> {
     const signer =
       (freighterSignTransaction as unknown as (
         xdr: string,
-        opts: { networkPassphrase: string; address?: string }
+        opts: { networkPassphrase: string; address?: string },
       ) => Promise<unknown>) ?? (null as unknown as never);
 
     if (!signer) {
@@ -605,7 +615,7 @@ export async function signTx(xdr: string, address?: string): Promise<string> {
       const errMsg =
         typeof errorVal === "string"
           ? errorVal
-          : (errorVal as { message?: string })?.message ?? String(errorVal);
+          : ((errorVal as { message?: string })?.message ?? String(errorVal));
       if (isUserRejectionMessage(errMsg)) {
         throw new UserRejectedError(errMsg);
       }
@@ -652,9 +662,11 @@ export async function submitTx(signedXdr: string): Promise<unknown> {
   // fromXDR is unavailable (test mocks) — sendTransaction will still accept it.
   let txToSend: unknown = signedXdr;
   try {
-    const maybeFromXdr = (TransactionBuilder as unknown as {
-      fromXDR?: (xdr: string, passphrase: string) => unknown;
-    }).fromXDR;
+    const maybeFromXdr = (
+      TransactionBuilder as unknown as {
+        fromXDR?: (xdr: string, passphrase: string) => unknown;
+      }
+    ).fromXDR;
     if (typeof maybeFromXdr === "function") {
       txToSend = maybeFromXdr.call(TransactionBuilder, signedXdr, STELLAR_NETWORK_PASSPHRASE);
     } else {
@@ -667,7 +679,7 @@ export async function submitTx(signedXdr: string): Promise<unknown> {
         try {
           txToSend = new (TxClass as new (x: string, p: string) => unknown)(
             signedXdr,
-            STELLAR_NETWORK_PASSPHRASE
+            STELLAR_NETWORK_PASSPHRASE,
           );
         } catch {
           txToSend = signedXdr;
@@ -681,9 +693,11 @@ export async function submitTx(signedXdr: string): Promise<unknown> {
   let sendRes: SorobanRpc.Api.SendTransactionResponse;
   try {
     // Server accepts Transaction | string depending on SDK version; cast is safe.
-    sendRes = await (server as unknown as { sendTransaction: (tx: unknown) => Promise<SorobanRpc.Api.SendTransactionResponse> }).sendTransaction(
-      txToSend as never
-    );
+    sendRes = await (
+      server as unknown as {
+        sendTransaction: (tx: unknown) => Promise<SorobanRpc.Api.SendTransactionResponse>;
+      }
+    ).sendTransaction(txToSend as never);
   } catch (err) {
     throw err instanceof Error ? err : new Error(String(err));
   }
@@ -693,7 +707,7 @@ export async function submitTx(signedXdr: string): Promise<unknown> {
     const r = sendRes as unknown as { errorResultXdr?: string; status: string };
     throw new TxSendFailedError(
       `Transaction submission failed: ${r.errorResultXdr ?? r.status}`,
-      r.errorResultXdr
+      r.errorResultXdr,
     );
   }
 
@@ -750,10 +764,7 @@ export async function submitTx(signedXdr: string): Promise<unknown> {
       const diag =
         (getRes as unknown as { resultXdr?: string; errorResultXdr?: string }).resultXdr ??
         (getRes as unknown as { resultXdr?: string }).resultXdr;
-      throw new TxFailedError(
-        `Transaction failed on-chain: ${diag ?? "unknown"}`,
-        diag
-      );
+      throw new TxFailedError(`Transaction failed on-chain: ${diag ?? "unknown"}`, diag);
     }
 
     // Unknown status — treat as pending and back off.
@@ -778,8 +789,6 @@ export async function submitTx(signedXdr: string): Promise<unknown> {
  * {@link rpcCall} so it inherits retry + endpoint failover.
  */
 export async function getLedgerCloseTime(): Promise<number> {
-  const result = await rpcCall((server) =>
-    server.getTransaction("0".repeat(64))
-  );
+  const result = await rpcCall((server) => server.getTransaction("0".repeat(64)));
   return Number(result.latestLedgerCloseTime);
 }

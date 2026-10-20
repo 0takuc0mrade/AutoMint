@@ -23,10 +23,30 @@ describe("Poller", () => {
   it("fetches a full page, inserts events, advances the checkpoint", async () => {
     const db = new IndexerDb(":memory:");
     const page = [
-      toRawRpcEvent(makeRawEvent({ contractId: CACC, topics: [sym("claim"), addr(G1)], value: vec([u64(10), u64(0)]), ledger: 200, seq: 0, closedAt: "2024-01-01T00:00:00Z" })),
-      toRawRpcEvent(makeRawEvent({ contractId: CTOK, topics: [sym("mint"), addr(G1)], value: i128(5), ledger: 201, seq: 0, closedAt: "2024-01-01T00:00:00Z" })),
+      toRawRpcEvent(
+        makeRawEvent({
+          contractId: CACC,
+          topics: [sym("claim"), addr(G1)],
+          value: vec([u64(10), u64(0)]),
+          ledger: 200,
+          seq: 0,
+          closedAt: "2024-01-01T00:00:00Z",
+        }),
+      ),
+      toRawRpcEvent(
+        makeRawEvent({
+          contractId: CTOK,
+          topics: [sym("mint"), addr(G1)],
+          value: i128(5),
+          ledger: 201,
+          seq: 0,
+          closedAt: "2024-01-01T00:00:00Z",
+        }),
+      ),
     ];
-    const rpc = new FakeRpcClient([{ events: page, latestLedger: 201, cursor: null }]);
+    const rpc = new FakeRpcClient([
+      { events: page, latestLedger: 201, cursor: null },
+    ]);
     const poller = new Poller({ rpc, db, config, defaultStartLedger: 200 });
 
     const res = await poller.pollOnce();
@@ -41,11 +61,28 @@ describe("Poller", () => {
 
   it("skips events from failed (reverted) contract calls", async () => {
     const db = new IndexerDb(":memory:");
-    const good = toRawRpcEvent(makeRawEvent({ contractId: CTOK, topics: [sym("mint"), addr(G1)], value: i128(5), ledger: 300, seq: 0 }));
-    const bad = toRawRpcEvent(
-      makeRawEvent({ contractId: CTOK, topics: [sym("mint"), addr(G1)], value: i128(999), ledger: 301, seq: 0, inSuccessful: false }),
+    const good = toRawRpcEvent(
+      makeRawEvent({
+        contractId: CTOK,
+        topics: [sym("mint"), addr(G1)],
+        value: i128(5),
+        ledger: 300,
+        seq: 0,
+      }),
     );
-    const rpc = new FakeRpcClient([{ events: [good, bad], latestLedger: 301, cursor: null }]);
+    const bad = toRawRpcEvent(
+      makeRawEvent({
+        contractId: CTOK,
+        topics: [sym("mint"), addr(G1)],
+        value: i128(999),
+        ledger: 301,
+        seq: 0,
+        inSuccessful: false,
+      }),
+    );
+    const rpc = new FakeRpcClient([
+      { events: [good, bad], latestLedger: 301, cursor: null },
+    ]);
     const poller = new Poller({ rpc, db, config });
 
     const res = await poller.pollOnce();
@@ -58,7 +95,15 @@ describe("Poller", () => {
   it("run() loops until aborted and stops cleanly", async () => {
     const db = new IndexerDb(":memory:");
     const page = [
-      toRawRpcEvent(makeRawEvent({ contractId: CTOK, topics: [sym("mint"), addr(G1)], value: i128(1), ledger: 400, seq: 0 })),
+      toRawRpcEvent(
+        makeRawEvent({
+          contractId: CTOK,
+          topics: [sym("mint"), addr(G1)],
+          value: i128(1),
+          ledger: 400,
+          seq: 0,
+        }),
+      ),
     ];
     const rpc = new FakeRpcClient([
       { events: page, latestLedger: 400, cursor: null },
@@ -77,6 +122,41 @@ describe("Poller", () => {
     expect(db.sumAmtMinted()).toBe("1");
     expect(db.getCheckpoint()).toBe(402);
     expect(rpc.calls.length).toBeGreaterThanOrEqual(3);
+    db.close();
+  });
+
+  it("reports poll failures and becomes ready after a successful poll", async () => {
+    const db = new IndexerDb(":memory:");
+    let shouldFail = true;
+    const rpc = {
+      getEvents: async () => {
+        if (shouldFail) {
+          shouldFail = false;
+          throw new Error("RPC unavailable");
+        }
+        return { events: [], latestLedger: 500 };
+      },
+    };
+    const poller = new Poller({ rpc, db, config });
+
+    await expect(poller.pollOnce()).rejects.toThrow("RPC unavailable");
+    expect(poller.health(30_000).readiness).toMatchObject({
+      ok: false,
+      last_error: "RPC unavailable",
+    });
+
+    await expect(poller.pollOnce()).resolves.toMatchObject({
+      latestLedger: 500,
+    });
+    expect(poller.health(30_000).readiness).toMatchObject({
+      ok: true,
+      stale: false,
+      last_error: "RPC unavailable",
+    });
+    const lastSuccess = poller.health(30_000).readiness.last_successful_poll_at;
+    expect(
+      poller.health(30_000, Date.parse(lastSuccess!) + 30_001).readiness,
+    ).toMatchObject({ ok: false, stale: true });
     db.close();
   });
 });

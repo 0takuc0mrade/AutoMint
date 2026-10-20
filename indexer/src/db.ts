@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS checkpoint (
   last_ledger INTEGER NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS aggregates (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 ${LISTINGS_SCHEMA}
 `;
 
@@ -73,6 +77,7 @@ export class IndexerDb {
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
     this.migrateListingIdentifiers();
+    this.initializeAggregates();
   }
 
   get raw(): Database.Database {
@@ -167,13 +172,80 @@ export class IndexerDb {
       // (e.g. indexing started mid-history): the floor-price query only looks
       // at status = 'active', so an unknown/absent listing cannot distort it.
       this.touchListingStmt().run(listingId);
-      this.closeListingStmt().run(event.event === "bought" ? "sold" : "cancelled", listingId);
+      this.closeListingStmt().run(
+        event.event === "bought" ? "sold" : "cancelled",
+        listingId,
+      );
     }
   }
 
   private applyDerivedState(event: DecodedEvent): void {
-    if (event.contract !== "marketplace") return;
-    this.applyListingState(event);
+    if (event.contract === "marketplace") {
+      this.applyListingState(event);
+      if (event.event === "bought") {
+        const data = event.data as unknown[];
+        this.addAggregate("marketplace_volume", data?.[1]);
+      }
+    }
+    if (event.contract === "token" && event.event === "mint") {
+      this.addAggregate("amt_minted", event.data);
+    }
+  }
+
+  private addAggregate(key: string, rawAmount: unknown): void {
+    let amount: bigint;
+    try {
+      amount = BigInt(toDecimal(rawAmount));
+    } catch {
+      return;
+    }
+    const row = this.db
+      .prepare("SELECT value FROM aggregates WHERE key = ?")
+      .get(key) as { value: string } | undefined;
+    const current = row ? BigInt(row.value) : 0n;
+    this.db
+      .prepare(
+        `INSERT INTO aggregates (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(key, (current + amount).toString());
+  }
+
+  /** One-time migration for databases created before exact totals existed. */
+  private initializeAggregates(): void {
+    const existing = this.db
+      .prepare("SELECT COUNT(*) AS n FROM aggregates")
+      .get() as { n: number };
+    if (existing.n > 0) return;
+
+    const rows = this.db
+      .prepare(
+        `SELECT contract, event, data_json FROM events
+         WHERE (contract = 'token' AND event = 'mint')
+            OR (contract = 'marketplace' AND event = 'bought')`,
+      )
+      .all() as { contract: string; event: string; data_json: string }[];
+
+    this.db.transaction(() => {
+      this.db
+        .prepare("INSERT INTO aggregates (key, value) VALUES (?, '0')")
+        .run("amt_minted");
+      this.db
+        .prepare("INSERT INTO aggregates (key, value) VALUES (?, '0')")
+        .run("marketplace_volume");
+      for (const row of rows) {
+        try {
+          const data = JSON.parse(row.data_json) as unknown;
+          if (row.contract === "token") {
+            this.addAggregate("amt_minted", data);
+          } else {
+            this.addAggregate("marketplace_volume", (data as unknown[])?.[1]);
+          }
+        } catch {
+          // Keep migration resilient to malformed historical payloads.
+        }
+      }
+    })();
   }
 
   private migrateListingIdentifiers(): void {
@@ -181,8 +253,12 @@ export class IndexerDb {
       name: string;
       type: string;
     }[];
-    const listingIdType = columns.find(({ name }) => name === "listing_id")?.type.toUpperCase();
-    const botIdType = columns.find(({ name }) => name === "bot_id")?.type.toUpperCase();
+    const listingIdType = columns
+      .find(({ name }) => name === "listing_id")
+      ?.type.toUpperCase();
+    const botIdType = columns
+      .find(({ name }) => name === "bot_id")
+      ?.type.toUpperCase();
     if (listingIdType === "TEXT" && botIdType === "TEXT") {
       return;
     }
@@ -245,7 +321,7 @@ export class IndexerDb {
     return inserted;
   }
 
-  // ── Aggregate queries (computed at read time) ─────────────────────────────
+  // ── Aggregate queries ──────────────────────────────────────────────────────
 
   /** Unique registered users (distinct user addresses on `register`). */
   countUsers(): number {
@@ -280,45 +356,27 @@ export class IndexerDb {
 
   /** Total AMT minted by the token contract (i128 sum as decimal string). */
   sumAmtMinted(): string {
-    const rows = this.db
-      .prepare(`SELECT data_json FROM events WHERE contract = 'token' AND event = 'mint'`)
-      .all() as { data_json: string }[];
-    let total = 0n;
-    for (const { data_json } of rows) {
-      const amount = toDecimal(JSON.parse(data_json));
-      try {
-        total += BigInt(amount);
-      } catch {
-        /* non-numeric payload — ignore rather than crash the aggregate */
-      }
-    }
-    return total.toString();
+    return this.aggregateValue("amt_minted");
   }
 
   /** Marketplace volume: sum of prices from `bought` events (i128). */
   sumVolume(): string {
-    const rows = this.db
-      .prepare(
-        `SELECT data_json FROM events WHERE contract = 'marketplace' AND event = 'bought'`,
-      )
-      .all() as { data_json: string }[];
-    let total = 0n;
-    for (const { data_json } of rows) {
-      const data = JSON.parse(data_json) as unknown[];
-      const price = data[1];
-      try {
-        total += BigInt(toDecimal(price));
-      } catch {
-        /* ignore malformed payloads */
-      }
-    }
-    return total.toString();
+    return this.aggregateValue("marketplace_volume");
+  }
+
+  private aggregateValue(key: string): string {
+    const row = this.db
+      .prepare("SELECT value FROM aggregates WHERE key = ?")
+      .get(key) as { value: string } | undefined;
+    return row?.value ?? "0";
   }
 
   /** Min price among active listings (decimal string) or null. */
   floorPrice(): string | null {
     const rows = this.db
-      .prepare(`SELECT price FROM listings WHERE status = 'active' AND price IS NOT NULL`)
+      .prepare(
+        `SELECT price FROM listings WHERE status = 'active' AND price IS NOT NULL`,
+      )
       .all() as { price: string }[];
     let min: bigint | null = null;
     for (const { price } of rows) {
@@ -372,7 +430,10 @@ export class IndexerDb {
       data_json: string;
     }[];
 
-    const byDay = new Map<string, { claims: number; amt: bigint; volume: bigint }>();
+    const byDay = new Map<
+      string,
+      { claims: number; amt: bigint; volume: bigint }
+    >();
     for (const r of rows) {
       let entry = byDay.get(r.day);
       if (!entry) {

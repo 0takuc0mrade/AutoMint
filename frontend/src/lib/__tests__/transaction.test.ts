@@ -23,6 +23,9 @@ jest.mock("@/store/walletStore", () => {
     error: null,
     wasConnected: true,
     lastAddress: "GD6VCGW7N4YUZUG2VKRN4DKIXGTBJZTZBV5ICATW2YCDCOS36VYPXAR3",
+    setNetworkMismatch: jest.fn((mismatch: boolean) => {
+      mockState.networkMismatch = mismatch;
+    }),
   };
   const fn: any = jest.fn((selector: any) => selector(mockState));
   fn.getState = jest.fn(() => mockState);
@@ -58,12 +61,12 @@ jest.mock("@/lib/stellar", () => {
         sendTransaction: mockSendTransaction,
         simulateTransaction: mockSimulateTransaction,
       }),
-  getActiveRpcUrl: () => "http://rpc-one.test",
-  getRpcEndpoints: () => ["http://rpc-one.test"],
-  __resetRpcFailoverStateForTests: () => {},
-  simulateContractCall: jest.fn(),
-  buildPreparedTx: jest.fn(),
-  getLedgerCloseTime: jest.fn(),
+    getActiveRpcUrl: () => "http://rpc-one.test",
+    getRpcEndpoints: () => ["http://rpc-one.test"],
+    __resetRpcFailoverStateForTests: () => {},
+    simulateContractCall: jest.fn(),
+    buildPreparedTx: jest.fn(),
+    getLedgerCloseTime: jest.fn(),
   };
 });
 
@@ -84,7 +87,7 @@ jest.mock("@stellar/stellar-sdk", () => ({
     {
       // Static: rehydrates the signed XDR for sendTransaction.
       fromXDR: jest.fn(() => ({ rehydrated: true })),
-    }
+    },
   ),
   scValToNative: jest.fn((v) => v),
   nativeToScVal: jest.fn((v) => v),
@@ -159,7 +162,7 @@ async function run() {
   return { result, statuses };
 }
 
-describe.skip("executeTransaction network guards (#455) — TODO: re-enable after #455 guards are re-introduced", () => {
+describe("executeTransaction network guards", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (useWalletStore as any).setState?.({ networkMismatch: false });
@@ -193,9 +196,7 @@ describe.skip("executeTransaction network guards (#455) — TODO: re-enable afte
   it("fails closed when the wallet network cannot be read before signing", async () => {
     mockGetNetwork.mockRejectedValue(new Error("extension unreachable"));
 
-    await expect(run()).rejects.toThrow(
-      /could not verify wallet network/i
-    );
+    await expect(run()).rejects.toThrow(/could not verify wallet network/i);
     expect(mockSignTransaction).not.toHaveBeenCalled();
   });
 
@@ -214,6 +215,21 @@ describe.skip("executeTransaction network guards (#455) — TODO: re-enable afte
   });
 });
 
+describe("simulation retry ownership", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (useWalletStore as any).setState?.({ networkMismatch: false });
+    happyRpc();
+  });
+
+  it("delegates a simulation exactly once to rpcCall", async () => {
+    mockSimulateTransaction.mockRejectedValueOnce(new Error("RPC 503"));
+
+    await expect(run()).rejects.toThrow("RPC 503");
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("sendTransaction is never retried automatically (#454)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -223,7 +239,7 @@ describe("sendTransaction is never retried automatically (#454)", () => {
 
   it("submits exactly once on a transient 502", async () => {
     mockSendTransaction.mockImplementation(() =>
-      Promise.reject(new Error("Request failed with status code 502"))
+      Promise.reject(new Error("Request failed with status code 502")),
     );
 
     await expect(run()).rejects.toThrow(/502/);
@@ -233,7 +249,7 @@ describe("sendTransaction is never retried automatically (#454)", () => {
 
   it("reports the failure through onStatus", async () => {
     mockSendTransaction.mockImplementation(() =>
-      Promise.reject(new Error("Request failed with status code 503"))
+      Promise.reject(new Error("Request failed with status code 503")),
     );
 
     const statuses: Array<{ stage: string; error?: string }> = [];
@@ -244,7 +260,7 @@ describe("sendTransaction is never retried automatically (#454)", () => {
         args: [],
         sourceAddress: SOURCE,
         onStatus: (s) => statuses.push(s),
-      })
+      }),
     ).rejects.toThrow(/503/);
 
     expect(statuses.map((s) => s.stage)).toEqual([
@@ -264,7 +280,7 @@ describe("sendTransaction is never retried automatically (#454)", () => {
     expect(statuses[statuses.length - 1].stage).toBe("success");
     expect(mockSignTransaction).toHaveBeenCalledWith(
       "tx-xdr",
-      expect.objectContaining({ networkPassphrase: STELLAR_NETWORK_PASSPHRASE })
+      expect.objectContaining({ networkPassphrase: STELLAR_NETWORK_PASSPHRASE }),
     );
     // The signed XDR is rehydrated into a Transaction before submission.
     expect(mockSendTransaction).toHaveBeenCalledWith({ rehydrated: true });

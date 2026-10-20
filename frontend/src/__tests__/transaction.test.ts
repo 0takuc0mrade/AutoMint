@@ -76,9 +76,11 @@ jest.mock("@stellar/stellar-sdk", () => {
 });
 
 const mockSignTransaction = jest.fn();
+const mockGetNetwork = jest.fn();
 jest.mock("@stellar/freighter-api", () => ({
   __esModule: true,
   signTransaction: (...args: unknown[]) => mockSignTransaction(...args),
+  getNetwork: (...args: unknown[]) => mockGetNetwork(...args),
 }));
 
 jest.mock("sonner", () => ({
@@ -177,16 +179,14 @@ beforeEach(() => {
 
   // The confirmation poll sleeps 1s..8s between reads; collapse those waits so
   // the loop runs at full speed. Every other timer is left alone.
-  timers = jest.spyOn(global, "setTimeout").mockImplementation(((
-    callback: () => void,
-    ms?: number,
-    ...args: unknown[]
-  ) =>
-    realSetTimeout(
-      callback,
-      typeof ms === "number" && ms >= 1_000 && ms <= 8_000 ? 0 : ms,
-      ...args
-    )) as unknown as typeof setTimeout);
+  timers = jest
+    .spyOn(global, "setTimeout")
+    .mockImplementation(((callback: () => void, ms?: number, ...args: unknown[]) =>
+      realSetTimeout(
+        callback,
+        typeof ms === "number" && ms >= 1_000 && ms <= 8_000 ? 0 : ms,
+        ...args,
+      )) as unknown as typeof setTimeout);
 
   // The mutation's onError logs; keep the output readable.
   consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
@@ -197,6 +197,10 @@ beforeEach(() => {
     build: () => ({ fee: "58281", toXDR: () => ASSEMBLED_XDR }),
   }));
   mockSignTransaction.mockResolvedValue(signApproved);
+  mockGetNetwork.mockResolvedValue({
+    network: "TESTNET",
+    networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+  });
   mockServer.sendTransaction.mockResolvedValue(sendPending);
   mockServer.getTransaction.mockResolvedValue(getSuccess);
 });
@@ -262,9 +266,9 @@ describe("transaction pipeline", () => {
       .hostFunction()
       .invokeContract();
     expect(invocation.functionName().toString()).toBe("list_bot");
-    expect(invocation.args().map((arg: { switch(): { name: string } }) => arg.switch().name)).toEqual(
-      ["scvAddress", "scvU64", "scvI128", "scvAddress"]
-    );
+    expect(
+      invocation.args().map((arg: { switch(): { name: string } }) => arg.switch().name),
+    ).toEqual(["scvAddress", "scvU64", "scvI128", "scvAddress"]);
 
     // Assemble step: the simulation result is folded into the built
     // transaction, and the wallet is asked to sign the *assembled* result —
@@ -276,7 +280,7 @@ describe("transaction pipeline", () => {
       expect.objectContaining({
         networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
         address: seller,
-      })
+      }),
     );
     expect(mockServer.sendTransaction).toHaveBeenCalledWith(SIGNED_XDR);
     expect(mockServer.getTransaction).toHaveBeenCalledWith(TX_HASH);
@@ -311,7 +315,7 @@ describe("transaction pipeline", () => {
     expect(error?.message).toContain("HostError: Error(Contract, #4)");
     expect(errorToast).toHaveBeenCalledWith(
       expect.stringContaining("HostError: Error(Contract, #4)"),
-      expect.anything()
+      expect.anything(),
     );
     expect(mockAssemble).not.toHaveBeenCalled();
     expect(mockSignTransaction).not.toHaveBeenCalled();
@@ -328,7 +332,7 @@ describe("transaction pipeline", () => {
     expect(error?.message).toBe("User declined access");
     expect(errorToast).toHaveBeenCalledWith(
       "Listing failed: User declined access",
-      expect.anything()
+      expect.anything(),
     );
     expect(mockServer.sendTransaction).not.toHaveBeenCalled();
     expect(successToast).not.toHaveBeenCalled();
@@ -356,7 +360,7 @@ describe("transaction pipeline", () => {
     expect(error?.message).toContain("Transaction failed on-chain");
     expect(errorToast).toHaveBeenCalledWith(
       expect.stringContaining("Transaction failed on-chain"),
-      expect.anything()
+      expect.anything(),
     );
     expect(successToast).not.toHaveBeenCalled();
     expect(storedTransactions()).toEqual([
@@ -373,7 +377,7 @@ describe("transaction pipeline", () => {
     expect(error?.message).toContain("not confirmed within");
     expect(errorToast).toHaveBeenCalledWith(
       expect.stringContaining("not confirmed within"),
-      expect.anything()
+      expect.anything(),
     );
     expect(successToast).not.toHaveBeenCalled();
     // It may still land on-chain, so it is left for resumePendingTransactions.

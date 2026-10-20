@@ -294,7 +294,7 @@ export default function DashboardPage() {
         <div className="flex flex-col gap-6">
           {/* Points Counter */}
           <PointsCounter
-            points={isLoading ? 0 : Number(profilePoints || BigInt(0))}
+            points={isLoading ? BigInt(0) : profilePoints || BigInt(0)}
             rate={isLoading ? 0 : totalRate}
             bots={isLoading ? [] : bots || []}
             amtBalance={isLoading ? BigInt(0) : amtBalance ?? BigInt(0)}

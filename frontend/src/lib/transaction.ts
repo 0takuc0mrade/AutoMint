@@ -25,11 +25,28 @@ import { withRetry } from "./rpcRetry";
 import { useTxStore, type TxRecord } from "@/store/txStore";
 
 /**
+ * Validate and get the fee multiplier from environment.
+ * Must be a positive finite number; defaults to 1.0 if not set.
+ */
+function getFeeMultiplier(): number {
+  const rawValue = process.env.NEXT_PUBLIC_FEE_MULTIPLIER;
+  if (!rawValue) return 1.0;
+
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `Invalid NEXT_PUBLIC_FEE_MULTIPLIER: "${rawValue}". Must be a positive finite number.`
+    );
+  }
+  return parsed;
+}
+
+/**
  * Multiplier applied to the assembled resource fee to add a safety buffer.
  * Configurable via NEXT_PUBLIC_FEE_MULTIPLIER env var (default 1.0).
  * Applied AFTER server.prepareTransaction assembles the resource fee.
  */
-const FEE_MULTIPLIER = Number(process.env.NEXT_PUBLIC_FEE_MULTIPLIER) || 1.0;
+const FEE_MULTIPLIER = getFeeMultiplier();
 
 /**
  * Transaction execution stage for status callbacks.

@@ -55,7 +55,7 @@ describe("loadContractConfig", () => {
     expect(isContractAddress("C" + "A".repeat(55))).toBe(true); // 56 chars total
   });
 
-  it("assertCompleteConfig rejects a malformed contract id and names the contract (#659)", () => {
+  it("assertCompleteConfig rejects a malformed contract id and names the contract (#659, #1230)", () => {
     const loaded: LoadedConfig = {
       config: {
         network: "testnet",
@@ -75,7 +75,7 @@ describe("loadContractConfig", () => {
     expect(() => assertCompleteConfig(loaded)).toThrow(/AM_ACCRUAL_CONTRACT_ID/);
   });
 
-  it("assertCompleteConfig accepts a config where every contract id is well formed (#659)", () => {
+  it("assertCompleteConfig accepts a config where every contract id is well formed (#659, #1230)", () => {
     const loaded: LoadedConfig = {
       config: {
         network: "testnet",

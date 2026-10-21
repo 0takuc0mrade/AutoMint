@@ -141,7 +141,7 @@ export function assertCompleteConfig(
   }
 
   // Every resolved ID feeds the RPC `getEvents` filters, so a malformed or
-  // placeholder value must stop startup here rather than fail on every poll (#659).
+  // placeholder value must stop startup here rather than fail on every poll (#659, #1230).
   const invalid = CONTRACT_NAMES.filter(
     (name) => !isContractAddress(loaded.config.contracts[name]),
   );

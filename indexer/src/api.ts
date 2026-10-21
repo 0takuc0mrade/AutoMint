@@ -46,7 +46,9 @@ export function createApiServer(opts: ApiOptions): express.Express {
   app.get("/api/events", (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 500);
     const offset = Math.max(Number(req.query.offset ?? 0), 0);
-    res.json({ total: db.recentEvents(limit, offset).length, events: db.recentEvents(limit, offset) });
+    const events = db.recentEvents(limit, offset);
+    const total = db.recentEvents(Infinity, 0).length;
+    res.json({ total, events });
   });
 
   app.get("/api/health", (_req, res) => {

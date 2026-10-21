@@ -101,8 +101,8 @@ The initialization calls it makes, in order:
 ```
 Registry.initialize    --admin $ADMIN_ADDRESS
 BotNFT.initialize      --admin $ADMIN_ADDRESS --registry $REGISTRY_ID
-Accrual.initialize     --admin $ADMIN_ADDRESS --bot_nft $BOT_NFT_ID --registry $REGISTRY_ID --points_per_amt 100
-Marketplace.initialize --admin $ADMIN_ADDRESS --bot-nft $BOT_NFT_ID --fee-bps 250
+Accrual.initialize     --admin $ADMIN_ADDRESS --bot_nft $BOT_NFT_ID --registry $REGISTRY_ID --token $TOKEN_ID --points_per_amt 100
+Marketplace.initialize --admin $ADMIN_ADDRESS --bot-nft $BOT_NFT_ID --fee-bps 250 --royalty-bps 0
 Token.initialize       --admin $ADMIN_ADDRESS --decimal 7 --name "AutoMint Token" --symbol "AMT"
 ```
 

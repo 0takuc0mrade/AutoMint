@@ -32,11 +32,13 @@ NETWORK="testnet"
 CLEAN=true
 TOOLCHAIN=""
 CONTRACTS=()
-declare -A WANT_CONTRACT=()
+# Indexed array, not `declare -A`: bash 3.2 (stock macOS) has no associative
+# arrays (#1251).
+WANT_CONTRACTS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --network)   NETWORK="$2";    shift 2 ;;
-    --contract)  WANT_CONTRACT["$2"]=1; shift 2 ;;
+    --contract)  WANT_CONTRACTS+=("$2"); shift 2 ;;
     --toolchain) TOOLCHAIN="$2";   shift 2 ;;
     --no-clean)  CLEAN=false;      shift   ;;
     --help|-h)   sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -72,6 +74,17 @@ pkg_and_wasm() {  # <name> -> echoes "<pkg> <wasm-file>"
     token)      echo "automint-token automint_token.wasm"         ;;
     *) echo "verify-deployment.sh: unknown contract: $1" >&2; exit 2 ;;
   esac
+}
+
+is_wanted() {  # <name> -> success when no --contract filter was given or it names <name>
+  # Guard the length first: under `set -u`, bash < 4.4 treats expanding an
+  # empty array as an unbound variable.
+  [[ ${#WANT_CONTRACTS[@]} -eq 0 ]] && return 0
+  local want
+  for want in "${WANT_CONTRACTS[@]}"; do
+    [[ "$want" == "$1" ]] && return 0
+  done
+  return 1
 }
 
 sha_of() { sha256sum "$1" | awk '{print $1}'; }
@@ -144,9 +157,7 @@ echo "toolchain: ${TOOLCHAIN:-<rust-toolchain.toml>}"
 
 failures=0
 for name in "${ALL_CONTRACTS[@]}"; do
-  if [[ ${#WANT_CONTRACT[@]} -gt 0 && -z "${WANT_CONTRACT[$name]+x}" ]]; then
-    continue
-  fi
+  is_wanted "$name" || continue
   if ! verify_one "$name"; then
     failures=$((failures + 1))
   fi

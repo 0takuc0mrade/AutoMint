@@ -7,6 +7,7 @@ import {
   TX_TIMEOUT,
 } from "./constants";
 import {
+  applyFeeMultiplier,
   rpcCall,
   getServer,
   signTx,
@@ -412,14 +413,11 @@ async function executeTransactionInternal(
 
   onStatus?.({ stage: "assembling" });
 
-  const assembled = SorobanRpc.assembleTransaction(tx, simResult).build();
-
   // Apply fee multiplier to assembled resource fee for surge buffer
-  if (FEE_MULTIPLIER !== 1.0) {
-    const baseFeeNum = parseInt(assembled.fee, 10);
-    const multipliedFee = Math.ceil(baseFeeNum * FEE_MULTIPLIER).toString();
-    assembled.fee = multipliedFee;
-  }
+  const assembled = applyFeeMultiplier(
+    SorobanRpc.assembleTransaction(tx, simResult).build(),
+    FEE_MULTIPLIER,
+  );
 
   const xdr = assembled.toXDR();
 
@@ -499,13 +497,10 @@ async function executeTransactionInternal(
 
       onStatus?.({ stage: "assembling" });
 
-      const retryAssembled = SorobanRpc.assembleTransaction(retryTx, retrySimResult).build();
-
-      if (FEE_MULTIPLIER !== 1.0) {
-        const baseFeeNum = parseInt(retryAssembled.fee, 10);
-        const multipliedFee = Math.ceil(baseFeeNum * FEE_MULTIPLIER).toString();
-        retryAssembled.fee = multipliedFee;
-      }
+      const retryAssembled = applyFeeMultiplier(
+        SorobanRpc.assembleTransaction(retryTx, retrySimResult).build(),
+        FEE_MULTIPLIER,
+      );
 
       const retryXdr = retryAssembled.toXDR();
 

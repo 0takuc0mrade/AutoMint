@@ -170,9 +170,10 @@ The table below specifies the required authentication signer, verification mecha
 | | `propose_admin` / `accept_admin` | Admin / New admin | `require_auth()` | Two-step admin transfer |
 | | `pause` / `unpause` | Admin | `admin.require_auth()` | Blocks/resumes `list_bot`, `buy_bot`, `update_price`; `cancel_listing` always works |
 | | `tier_stats` / `market_stats` | None | Public view | Per-tier volume, sale count, last sale price and floor |
-| | `make_offer` | Buyer | `buyer.require_auth()` | Escrows the offered amount in the contract; rejected on the buyer's own bot |
+| | `make_offer` | Buyer | `buyer.require_auth()` | Escrows the offered amount in the contract; rejected on the buyer's own bot or when `expires_at` is more than `MAX_OFFER_DURATION` (30 days) away |
 | | `accept_offer` | Seller | `seller.require_auth()` | Moves the bot (from the seller or from their listing escrow) to the buyer and pays out the escrow |
 | | `cancel_offer` | Buyer, or anyone after expiry | `caller.require_auth()` | Refunds the escrow in full to the buyer |
+| | `dismiss_offer` | Bot owner (or listing seller), or admin | `caller.require_auth()` | Clears an open offer before expiry; refunds the escrow in full to the buyer |
 | | `get_offer` / `get_offers_for_bot` | None | Public view | One offer, or every open offer on a bot |
 | | `withdraw_fees` | Admin | `admin.require_auth()` | Moves accrued fees out; bounded by `fees_accrued`, never touches offer escrow |
 | | `fees_accrued` | None | Public view | Accrued platform fees per currency |
@@ -302,6 +303,7 @@ Soroban provides three storage tiers: **Instance**, **Persistent**, and **Tempor
 | | `offered` | `buyer: Address`, `offer_id: u64` | `(bot_id: u64, amount: i128, expires_at: u64)` | Offer escrowed |
 | | `offer_acc` | `seller: Address`, `buyer: Address` | `(offer_id: u64, bot_id: u64, amount: i128)` | Offer accepted; bot and funds moved |
 | | `offer_cxl` | `buyer: Address`, `offer_id: u64` | `(bot_id: u64, amount: i128, expired: bool)` | Offer cancelled and refunded |
+| | `offer_dsm` | `buyer: Address`, `offer_id: u64` | `(bot_id: u64, amount: i128, dismissed_by: Address)` | Offer dismissed by the bot owner or admin and refunded |
 | | `fees_wd` | `admin: Address`, `to: Address` | `(currency: Address, amount: i128, remaining: i128)` | Accrued fees withdrawn |
 | **AMT Token** | `approve` | `from: Address`, `spender: Address` | `(amount: i128, expiration: u32)` | Allowance approved |
 | | `transfer` | `from: Address`, `to: Address` | `amount: i128` | Tokens transferred |

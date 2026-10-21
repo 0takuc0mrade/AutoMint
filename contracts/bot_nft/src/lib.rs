@@ -41,6 +41,7 @@ pub enum BotTier {
 }
 
 impl Tier {
+    /// Mint price for this legacy tier, in AMT base units (7 decimals).
     pub fn price(self) -> i128 {
         match self {
             Tier::Basic => 0,
@@ -51,6 +52,8 @@ impl Tier {
 }
 
 impl BotTier {
+    /// Mint price for this tier, in AMT base units (7 decimals). Basic is
+    /// free.
     pub fn price(self) -> i128 {
         match self {
             BotTier::Basic => 0,
@@ -61,6 +64,7 @@ impl BotTier {
         }
     }
 
+    /// Display name for this tier, e.g. `"Gold Bot"`.
     pub fn name(self, env: &Env) -> String {
         match self {
             BotTier::Basic => String::from_str(env, "Basic Bot"),
@@ -71,6 +75,8 @@ impl BotTier {
         }
     }
 
+    /// Points per hour a bot of this tier contributes to its owner's
+    /// accrual rate.
     pub fn rate(self) -> u64 {
         match self {
             BotTier::Basic => 1,
@@ -143,6 +149,12 @@ pub enum DataKey {
     Approval(u64),
     /// Operator approval: maps (owner, operator) -> bool.
     OperatorApproval(Address, Address),
+    /// Total supply of all bots (maintained on mint/burn, never transfer)
+    Supply,
+    /// Base URI for token metadata
+    BaseUri,
+    /// Count of failed registry syncs
+    RegistryFailCount,
 }
 
 /// Stored data for a single-token approval.
@@ -154,12 +166,6 @@ pub struct ApprovalEntry {
     /// The ledger sequence number at or after which this approval expires.
     /// Set to `u32::MAX` to indicate no expiry within the contract's lifetime.
     pub expiration_ledger: u32,
-    /// Total supply of all bots (maintained on mint/burn, never transfer)
-    Supply,
-    /// Base URI for token metadata
-    BaseUri,
-    /// Count of failed registry syncs
-    RegistryFailCount,
 }
 
 #[contracterror]
@@ -189,9 +195,9 @@ pub enum BotNFTError {
     /// Admin attempted to lower the cap below the current minted supply (#385).
     CapBelowSupply = 17,
     /// The approval has expired (current ledger >= expiration_ledger).
-    ApprovalExpired = 16,
+    ApprovalExpired = 18,
     /// The caller is neither the owner, an approved spender, nor an approved operator.
-    NotApproved = 17,
+    NotApproved = 19,
 }
 
 const LEDGER_BUMP: u32 = 120960;
@@ -217,6 +223,13 @@ pub struct BotNFTContract;
 
 #[contractimpl]
 impl BotNFTContract {
+    /// One-time setup: records the admin, registry and payment-token
+    /// addresses, resets the id counter to 1, and seeds the default tier
+    /// rates (Basic 1, Bronze 5, Silver 25, Gold 100, Diamond 500).
+    ///
+    /// Auth: `admin.require_auth()`.
+    ///
+    /// Errors: `AlreadyInitialized` on a second call.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -258,6 +271,14 @@ impl BotNFTContract {
         Ok(())
     }
 
+    /// Admin-only: point this contract at the accrual contract. Once set,
+    /// every mint and transfer best-effort invokes `sync_rate` on accrual
+    /// for the affected users so a rate change never needs a manual
+    /// follow-up.
+    ///
+    /// Auth: admin only.
+    ///
+    /// Errors: `NotInitialized` when no admin is recorded.
     pub fn set_accrual(env: Env, accrual: Address) -> Result<(), BotNFTError> {
         let admin: Address = env
             .storage()
@@ -269,6 +290,10 @@ impl BotNFTContract {
         Ok(())
     }
 
+    /// The token contract whose units are charged for paid tier mints and
+    /// held in the contract treasury.
+    ///
+    /// Errors: `NotInitialized`.
     pub fn payment_token(env: Env) -> Result<Address, BotNFTError> {
         env.storage()
             .instance()
@@ -276,6 +301,14 @@ impl BotNFTContract {
             .ok_or(BotNFTError::NotInitialized)
     }
 
+    /// Admin-only: record the marketplace contract so that any transfer out
+    /// of an owner (to a destination other than the marketplace itself)
+    /// best-effort notifies it via `on_bot_moved`, letting the marketplace
+    /// deactivate a listing whose bot moved without a sale.
+    ///
+    /// Auth: admin only.
+    ///
+    /// Errors: `NotInitialized` when no admin is recorded.
     pub fn set_marketplace(env: Env, marketplace: Address) -> Result<(), BotNFTError> {
         let admin: Address = env
             .storage()
@@ -293,6 +326,15 @@ impl BotNFTContract {
         Ok(())
     }
 
+    /// Admin-only: change the base accrual rate for one tier. The new rate
+    /// must be non-zero and within [current/2, current*2], so a typo cannot
+    /// silently reprice every bot of that tier. Emits `rate_set` with the
+    /// old and new rates.
+    ///
+    /// Auth: admin only.
+    ///
+    /// Errors: `NotInitialized`, `InvalidTier` when `rate` is zero,
+    /// `Unauthorized` when the change is outside the 2x band.
     pub fn set_tier_rate(env: Env, tier: BotTier, rate: u64) -> Result<(), BotNFTError> {
         let admin: Address = env
             .storage()
@@ -350,21 +392,18 @@ impl BotNFTContract {
         // Disallow setting a cap that is already exceeded by live supply
         // (except cap == 0, which means "remove cap").
         if cap > 0 {
-            let current_supply = Self::tier_supply(&env, tier);
+            let current_supply = Self::read_tier_supply(&env, tier);
             if cap < current_supply {
                 return Err(BotNFTError::CapBelowSupply);
             }
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::TierCap(tier), &cap);
+        env.storage().instance().set(&DataKey::TierCap(tier), &cap);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
-        env.events()
-            .publish((symbol_short!("cap_set"), tier), cap);
+        env.events().publish((symbol_short!("cap_set"), tier), cap);
         Ok(())
     }
 
@@ -390,10 +429,21 @@ impl BotNFTContract {
         if cap == 0 {
             return u64::MAX; // uncapped sentinel
         }
-        let supply = Self::tier_supply(&env, tier);
+        let supply = Self::read_tier_supply(&env, tier);
         cap.saturating_sub(supply)
     }
 
+    /// Mint one free Basic bot to `owner`. Each account may claim at most
+    /// `MAX_BASIC_BOTS_PER_ACCOUNT` (1) free Basic bot; further mints of
+    /// that tier must go through a paid path or an admin grant. Derives the
+    /// bot's deterministic variant/bonus, updates tier supply and the
+    /// registry count, and best-effort syncs the owner's accrual rate.
+    ///
+    /// Auth: `owner.require_auth()`.
+    ///
+    /// Errors: `NotInitialized`, `SupplyCapExceeded` when the account
+    /// already has its free Basic bot (or the hard tier cap is reached).
+    /// Returns the new bot id.
     pub fn mint_basic(env: Env, owner: Address) -> Result<u64, BotNFTError> {
         if !env.storage().instance().has(&DataKey::Initialized) {
             return Err(BotNFTError::NotInitialized);
@@ -418,6 +468,16 @@ impl BotNFTContract {
         Self::do_mint(&env, &owner, BotTier::Basic, false)
     }
 
+    /// Mint a paid-tier bot to `owner`: charge the tier's price in the
+    /// payment token (Basic is free, Advanced 5 AMT, Premium 20 AMT), then
+    /// mint the corresponding `BotTier`. The token transfer is the payment —
+    /// it fails when `owner` cannot cover the price.
+    ///
+    /// Auth: `owner.require_auth()`.
+    ///
+    /// Errors: `NotInitialized`, a token transfer failure on insufficient
+    /// balance, plus every error `do_mint` can raise (`SupplyCapExceeded`,
+    /// `TierSoldOut`, `Overflow`). Returns the new bot id.
     pub fn mint_tier(env: Env, owner: Address, tier: Tier) -> Result<u64, BotNFTError> {
         if !env.storage().instance().has(&DataKey::Initialized) {
             return Err(BotNFTError::NotInitialized);
@@ -536,7 +596,7 @@ impl BotNFTContract {
         };
 
         // Enforce hard-coded per-tier supply cap (MAX_TIER_SUPPLY).
-        let supply = Self::tier_supply(env, tier).saturating_add(1);
+        let supply = Self::read_tier_supply(env, tier).saturating_add(1);
         if supply > MAX_TIER_SUPPLY {
             return Err(BotNFTError::SupplyCapExceeded);
         }
@@ -601,6 +661,15 @@ impl BotNFTContract {
         }
     }
 
+    /// Transfer `bot_id` from `from` to `to`. A self-transfer (`from ==
+    /// to`) is a no-op. Clears any single-token approval, updates the
+    /// owner's bot list, best-effort syncs both users' accrual rates, and
+    /// best-effort notifies the marketplace via `on_bot_moved` for every
+    /// destination except the marketplace itself (escrow deposits).
+    ///
+    /// Auth: `from.require_auth()`; only the current owner may call it.
+    ///
+    /// Errors: `BotNotFound`, `NotOwner` when `from` does not own the bot.
     pub fn transfer(env: Env, bot_id: u64, from: Address, to: Address) -> Result<(), BotNFTError> {
         from.require_auth();
         if from == to {
@@ -641,7 +710,9 @@ impl BotNFTContract {
 
         if expiration_ledger < env.ledger().sequence() {
             // Immediately-expired approval is treated as a revocation.
-            env.storage().persistent().remove(&DataKey::Approval(bot_id));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Approval(bot_id));
         } else {
             let entry = ApprovalEntry {
                 spender: spender.clone(),
@@ -670,10 +741,7 @@ impl BotNFTContract {
     /// Return the currently-approved spender for `bot_id`, or `None` if there
     /// is no valid (non-expired) approval.
     pub fn get_approved(env: Env, bot_id: u64) -> Option<Address> {
-        let entry: ApprovalEntry = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Approval(bot_id))?;
+        let entry: ApprovalEntry = env.storage().persistent().get(&DataKey::Approval(bot_id))?;
         if entry.expiration_ledger < env.ledger().sequence() {
             None
         } else {
@@ -698,9 +766,10 @@ impl BotNFTContract {
         owner.require_auth();
 
         if approved {
-            env.storage()
-                .persistent()
-                .set(&DataKey::OperatorApproval(owner.clone(), operator.clone()), &true);
+            env.storage().persistent().set(
+                &DataKey::OperatorApproval(owner.clone(), operator.clone()),
+                &true,
+            );
             env.storage().persistent().extend_ttl(
                 &DataKey::OperatorApproval(owner.clone(), operator.clone()),
                 LEDGER_THRESHOLD,
@@ -715,10 +784,8 @@ impl BotNFTContract {
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
-        env.events().publish(
-            (symbol_short!("op_appr"), owner, operator),
-            approved,
-        );
+        env.events()
+            .publish((symbol_short!("op_appr"), owner, operator), approved);
         Ok(())
     }
 
@@ -767,15 +834,15 @@ impl BotNFTContract {
             let is_operator = Self::is_approved_for_all(env.clone(), from.clone(), spender.clone());
             if !is_operator {
                 // Fall through to single-token approval check.
-                let entry: Option<ApprovalEntry> = env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::Approval(bot_id));
+                let entry: Option<ApprovalEntry> =
+                    env.storage().persistent().get(&DataKey::Approval(bot_id));
                 match entry {
                     Some(a) if a.spender == spender => {
                         if a.expiration_ledger < env.ledger().sequence() {
                             // Expired — clean up and reject.
-                            env.storage().persistent().remove(&DataKey::Approval(bot_id));
+                            env.storage()
+                                .persistent()
+                                .remove(&DataKey::Approval(bot_id));
                             return Err(BotNFTError::ApprovalExpired);
                         }
                         // Valid single-token approval — will be consumed below.
@@ -820,7 +887,9 @@ impl BotNFTContract {
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
         // ERC-721 §: clear single-token approval on any transfer.
-        env.storage().persistent().remove(&DataKey::Approval(bot_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Approval(bot_id));
 
         Self::remove_bot_from_user(env, from, bot_id);
         Self::add_bot_to_user(env, to, bot_id);
@@ -843,8 +912,10 @@ impl BotNFTContract {
             }
         }
 
-        env.events()
-            .publish((symbol_short!("transfer"), from.clone(), to.clone()), bot_id);
+        env.events().publish(
+            (symbol_short!("transfer"), from.clone(), to.clone()),
+            bot_id,
+        );
         Ok(())
     }
 
@@ -859,7 +930,7 @@ impl BotNFTContract {
             return Err(BotNFTError::NotOwner);
         }
 
-        let supply = Self::tier_supply(&env, bot.tier);
+        let supply = Self::read_tier_supply(&env, bot.tier);
         env.storage()
             .persistent()
             .set(&DataKey::TierSupply(bot.tier), &supply.saturating_sub(1));
@@ -962,6 +1033,12 @@ impl BotNFTContract {
         result
     }
 
+    /// Full record for one bot, with `accrual_rate` computed as the
+    /// current tier base rate plus the stored rarity bonus. Reads the
+    /// current layout first and falls back to the pre-`StoredBotNFT`
+    /// layout for bots minted before variant/bonus were introduced.
+    ///
+    /// Errors: `BotNotFound` when the id was never minted or was burned.
     pub fn get_bot(env: Env, bot_id: u64) -> Result<BotNFT, BotNFTError> {
         let stored: StoredBotNFT = match env.storage().persistent().get(&DataKey::Bot(bot_id)) {
             Some(s) => s,
@@ -1026,9 +1103,6 @@ impl BotNFTContract {
         Ok(())
     }
 
-    /// Off-chain verifiable descriptor. The traits are derived deterministically
-    /// from sha256(bot_id, minted_at, owner); this URI exposes the derivation
-    /// inputs so anyone can recompute `variant`/`bonus_bps` and confirm rarity.
     // ─── Issue #384: Supply tracking ───────────────────────────────────
 
     /// Total supply of all bots (minted minus burned).
@@ -1036,54 +1110,89 @@ impl BotNFTContract {
         env.storage().instance().get(&DataKey::Supply).unwrap_or(0)
     }
 
-    /// Supply of bots for a specific tier.
+    /// Supply of bots for a specific tier. Reads the same persistent key
+    /// that `mint`/`burn` maintain.
     pub fn tier_supply(env: Env, tier: BotTier) -> u64 {
-        env.storage().instance().get(&DataKey::TierSupply(tier)).unwrap_or(0)
+        Self::read_tier_supply(&env, tier)
     }
 
     // ─── Issue #381: Token metadata / URI ────────────────────────────────
 
     /// Set the base URI for token metadata (admin only).
     pub fn set_base_uri(env: Env, base_uri: String) -> Result<(), BotNFTError> {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(BotNFTError::NotInitialized)?;
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(BotNFTError::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::BaseUri, &base_uri);
-        env.events().publish((symbol_short!("base_uri"),), (admin, base_uri));
+        env.events()
+            .publish((symbol_short!("base_uri"),), (admin, base_uri));
         Ok(())
     }
 
     /// Get the current base URI.
     pub fn base_uri(env: Env) -> Result<String, BotNFTError> {
-        env.storage().instance().get(&DataKey::BaseUri).ok_or(BotNFTError::NotFound)
+        env.storage()
+            .instance()
+            .get(&DataKey::BaseUri)
+            .ok_or(BotNFTError::NotFound)
     }
 
     /// Collection metadata: name, symbol, and base URI.
     pub fn collection_metadata(env: Env) -> Result<(String, String, String), BotNFTError> {
-        let base = env.storage().instance().get(&DataKey::BaseUri).unwrap_or(String::from(&env, ""));
-        Ok((String::from(&env, "AutoMint Bot"), String::from(&env, "BOT"), base))
+        let base = env
+            .storage()
+            .instance()
+            .get(&DataKey::BaseUri)
+            .unwrap_or_else(|| String::from_str(&env, ""));
+        Ok((
+            String::from_str(&env, "AutoMint Bot"),
+            String::from_str(&env, "BOT"),
+            base,
+        ))
     }
 
     // ─── Issue #387: Registry management ─────────────────────────────────
 
     /// Get the current registry address.
     pub fn registry(env: Env) -> Result<Address, BotNFTError> {
-        env.storage().instance().get(&DataKey::Registry).ok_or(BotNFTError::NotFound)
+        env.storage()
+            .instance()
+            .get(&DataKey::Registry)
+            .ok_or(BotNFTError::NotFound)
     }
 
     /// Set the registry address (admin only).
     pub fn set_registry(env: Env, registry: Address) -> Result<(), BotNFTError> {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).ok_or(BotNFTError::NotInitialized)?;
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(BotNFTError::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Registry, &registry);
-        env.events().publish((symbol_short!("registry"),), (admin, registry));
+        env.events()
+            .publish((symbol_short!("registry"),), (admin, registry));
         Ok(())
     }
 
     /// Count of failed registry syncs.
     pub fn registry_fail_count(env: Env) -> u64 {
-        env.storage().instance().get(&DataKey::RegistryFailCount).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::RegistryFailCount)
+            .unwrap_or(0)
     }
 
+    /// Metadata URI for `bot_id`. The traits are derived deterministically
+    /// from sha256(bot_id, minted_at, owner); this URI exposes the
+    /// derivation inputs (id, minted_at, variant, bonus_bps, owner) as query
+    /// parameters so anyone can recompute `variant`/`bonus_bps` and confirm
+    /// rarity off-chain.
+    ///
+    /// Errors: `BotNotFound`.
     pub fn token_uri(env: Env, bot_id: u64) -> Result<String, BotNFTError> {
         let bot: BotNFT = Self::get_bot(env.clone(), bot_id)?;
         let owner_str = bot.owner.to_string();
@@ -1126,6 +1235,9 @@ impl BotNFTContract {
         }
     }
 
+    /// Bot ids owned by `user`, in ownership order. Empty (not an error)
+    /// when the user owns no bots. Paginate detailed records with
+    /// `get_user_bots_detailed` or `get_bot`.
     pub fn get_user_bots(env: Env, user: Address) -> Vec<u64> {
         env.storage()
             .persistent()
@@ -1149,6 +1261,10 @@ impl BotNFTContract {
         bots
     }
 
+    /// Sum of the effective accrual rates (tier base + rarity bonus) of
+    /// every bot `user` owns. This is the rate accrual reads when starting
+    /// or syncing a user, so it must stay consistent with `get_bot`'s
+    /// `accrual_rate`. 0 when the user owns no bots.
     pub fn get_user_total_rate(env: Env, user: Address) -> u64 {
         let bot_ids = Self::get_user_bots(env.clone(), user);
         let mut total = 0_u64;
@@ -1160,6 +1276,7 @@ impl BotNFTContract {
         total
     }
 
+    /// Display name, current base rate and mint price for one tier.
     pub fn get_tier_info(env: Env, tier: BotTier) -> TierInfo {
         TierInfo {
             name: tier.name(&env),
@@ -1220,8 +1337,10 @@ impl BotNFTContract {
         Ok(id)
     }
 
-    /// Number of bots minted for a given tier (supply tracking).
-    fn tier_supply(env: &Env, tier: BotTier) -> u64 {
+    /// Number of bots minted for a given tier (supply tracking). Reads the
+    /// persistent key that `do_mint`/`burn` maintain; the public
+    /// `tier_supply` entrypoint reads a different (instance) key.
+    fn read_tier_supply(env: &Env, tier: BotTier) -> u64 {
         env.storage()
             .persistent()
             .get(&DataKey::TierSupply(tier))
@@ -1298,6 +1417,10 @@ impl BotNFTContract {
         );
     }
 
+    /// The admin address recorded at initialization. Required by the
+    /// marketplace's `probe_bot_nft` check.
+    ///
+    /// Errors: `NotInitialized` when no admin is recorded.
     pub fn admin(env: Env) -> Result<Address, BotNFTError> {
         env.storage()
             .instance()
@@ -1370,8 +1493,14 @@ impl BotNFTContract {
 
     /// Increment the registry failure counter (issue #387).
     fn bump_registry_fail_count(env: &Env) {
-        let count: u64 = env.storage().instance().get(&DataKey::RegistryFailCount).unwrap_or(0);
-        env.storage().instance().set(&DataKey::RegistryFailCount, &(count + 1));
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RegistryFailCount)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::RegistryFailCount, &(count + 1));
     }
 
     fn decrement_bot_count(env: &Env, user: &Address, bot_id: u64) {

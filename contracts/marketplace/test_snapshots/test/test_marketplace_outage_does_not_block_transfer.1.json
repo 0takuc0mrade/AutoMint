@@ -1157,6 +1157,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "RegistryFailCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "TierRate"
                             },
                             {

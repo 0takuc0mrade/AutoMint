@@ -112,6 +112,14 @@ describe("aggregate API", () => {
     expect(body.events[0].ledger).toBe(5008); // newest first
   });
 
+  it("GET /api/events reports the full event count as total, not the page size (#1244)", async () => {
+    seed();
+    const body = await fetch(`${base}/api/events?limit=2&offset=4`).then((res) => res.json());
+    expect(body.total).toBe(9);
+    expect(body.events).toHaveLength(2);
+    expect(body.events[0].ledger).toBe(5004);
+  });
+
   it("GET /api/events preserves full-width listing IDs as decimal strings", async () => {
     const listingId = 18_446_744_073_709_551_615n;
     const raw = makeRawEvent({

@@ -617,6 +617,14 @@ export class IndexerDb {
     return out;
   }
 
+  /** Total indexed events — the pagination total for `recentEvents`. */
+  countEvents(): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM events`)
+      .get() as { n: number };
+    return row.n;
+  }
+
   /** Recent raw events (dashboard / debug). */
   recentEvents(limit = 50, offset = 0): EventRow[] {
     return this.db

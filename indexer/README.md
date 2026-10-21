@@ -63,7 +63,7 @@ Environment variables:
 | `AM_NETWORK` | `testnet` | Network name; also selects `deployments/<name>.json` |
 | `AM_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint |
 | `AM_DB_PATH` | `indexer/data/am-indexer-<network>.db` | SQLite file |
-| `AM_START_LEDGER` | `0` | Ledger to start from when no checkpoint exists |
+| `AM_START_LEDGER` | `0` | Ledger to start from (inclusive) when no checkpoint exists; `0` starts at the RPC node's oldest retained ledger (`getHealth().oldestLedger`) |
 | `AM_POLL_INTERVAL_MS` | `5000` | Poll loop delay |
 | `AM_PORT` | `8765` | API + dashboard port |
 | `AM_MANIFEST` | — | Explicit path to a deployment manifest |

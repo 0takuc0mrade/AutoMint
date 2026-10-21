@@ -3,8 +3,9 @@
  *
  * Each iteration:
  *   1. reads the persisted checkpoint (last fully-processed ledger),
- *   2. fetches events from `checkpoint + 1` (or the configured start ledger on
- *      a cold start) via the RPC client, with cursor-based pagination,
+ *   2. fetches events from `checkpoint + 1` (or, on a cold start, the
+ *      configured start ledger itself or the RPC's oldest retained ledger)
+ *      via the RPC client, with cursor-based pagination,
  *   3. decodes each event and inserts it with an idempotent upsert keyed by
  *      the stable event id — so overlapping fetches after a restart can never
  *      double-count,
@@ -22,7 +23,10 @@ export interface PollerOptions {
   rpc: RpcClient;
   db: IndexerDb;
   config: ContractConfig;
-  /** Ledger to start from when there is no checkpoint yet. */
+  /**
+   * Ledger to start from (inclusive) when there is no checkpoint yet; 0 or
+   * unset means the oldest ledger the RPC node still retains.
+   */
   defaultStartLedger?: number;
   log?: (message: string, meta?: Record<string, unknown>) => void;
 }
@@ -67,9 +71,24 @@ export class Poller {
     this.log = opts.log ?? ((message) => console.log(`[poller] ${message}`));
   }
 
-  /** How far behind the chain head we are (best-effort; 0 when idle). */
-  async currentCheckpoint(): Promise<number> {
-    return this.db.getCheckpoint() ?? this.defaultStartLedger;
+  /** Last fully-processed ledger, or `null` before the first checkpoint. */
+  async currentCheckpoint(): Promise<number | null> {
+    return this.db.getCheckpoint();
+  }
+
+  /**
+   * First ledger to fetch (inclusive): the one after the checkpoint, or on a
+   * cold start the configured start ledger itself (#1228). Ledger 0 does not
+   * exist, so an unset start ledger begins at the oldest ledger the RPC node
+   * retains — `getEvents` rejects anything outside its retention window.
+   */
+  private async resolveStartLedger(
+    checkpoint: number | null,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    if (checkpoint !== null) return checkpoint + 1;
+    if (this.defaultStartLedger > 0) return this.defaultStartLedger;
+    return this.rpc.getOldestLedger(signal);
   }
 
   /**
@@ -78,8 +97,7 @@ export class Poller {
    */
   private async pollOnceInternal(signal?: AbortSignal): Promise<PollResult> {
     const checkpoint = await this.currentCheckpoint();
-    const startLedger =
-      checkpoint === 0 ? this.defaultStartLedger : checkpoint + 1;
+    const startLedger = await this.resolveStartLedger(checkpoint, signal);
 
     const contractIds = Object.values(this.config.contracts);
     this.log("polling", {

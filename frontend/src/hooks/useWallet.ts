@@ -32,6 +32,28 @@ function shortKey(pk: string): string {
 }
 
 /**
+ * Freighter API v3 resolves failed calls with an `error` field instead of
+ * rejecting (#658). Throw on it so a failed call is never read as a success
+ * with an empty address or a missing network.
+ */
+function unwrapFreighter<T extends object>(result: T): T {
+  const { error } = result as { error?: { message?: string } };
+  if (error) {
+    throw new Error(error.message || "Freighter request failed");
+  }
+  return result;
+}
+
+/** The connected account from Freighter, rejecting an empty address (#658). */
+async function fetchAddress(): Promise<string> {
+  const { address } = unwrapFreighter(await getAddress());
+  if (!address) {
+    throw new Error("Freighter did not return an account address");
+  }
+  return address;
+}
+
+/**
  * Remove every React Query cache entry that is keyed to a specific wallet
  * address. Called when the connected account changes so the new account never
  * sees stale data from the previous session.
@@ -120,9 +142,9 @@ export function useWallet() {
     toast.loading("Connecting wallet...", { id: "wallet-connect" });
 
     try {
-      await requestAccess();
-      const { address: pk } = await getAddress();
-      const net = await getNetwork();
+      unwrapFreighter(await requestAccess());
+      const pk = await fetchAddress();
+      const net = unwrapFreighter(await getNetwork());
       setConnected(pk, net.networkPassphrase);
 
       const isMismatch = net.networkPassphrase !== STELLAR_NETWORK_PASSPHRASE;
@@ -182,7 +204,9 @@ export function useWallet() {
           return;
         }
 
-        const net = await getNetwork();
+        // A failed getNetwork throws into the catch below, which applies the
+        // same keep-or-clear policy as any other restore failure (#658).
+        const net = unwrapFreighter(await getNetwork());
         if (cancelled) return;
 
         setConnected(address, net.networkPassphrase);
@@ -220,10 +244,14 @@ export function useWallet() {
     const checkWalletState = async () => {
       try {
         // Fetch both in parallel — two lightweight Freighter bridge calls.
-        const [{ address: freshAddress }, freshNet] = await Promise.all([
+        // A returned error skips the whole tick (the catch below), so a
+        // failed read never looks like an account or network change (#658).
+        const [addressResult, netResult] = await Promise.all([
           getAddress(),
           getNetwork(),
         ]);
+        const { address: freshAddress } = unwrapFreighter(addressResult);
+        const freshNet = unwrapFreighter(netResult);
 
         // ── Account change ──────────────────────────────────────────────────
         // Read the current store value inline (not from the closure) so we

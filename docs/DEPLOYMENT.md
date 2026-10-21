@@ -66,7 +66,8 @@ deployment state, not source.
       "initialized": true,
       "initialized_at": "2024-…",
       "deployed_at": "2024-…",
-      "wasm_path": "target/wasm32-unknown-unknown/release/automint_registry.wasm",
+      "wasm_path": "target/wasm32v1-none/release/automint_registry.wasm",
+      "wasm_target": "wasm32v1-none",
       "wasm_hash": "<sha256 of the deployed wasm>",
       "git_sha": "047c77c…"
     }
@@ -92,7 +93,7 @@ Key properties:
 
 `scripts/verify-deployment.sh <network>` rebuilds each recorded contract from
 the manifest's `git_sha` in a throwaway git worktree, **twice**, in two
-separate Cargo target directories, and asserts both rebuilt wasm sha256 hashes
+separate target directories, and asserts both rebuilt wasm sha256 hashes
 equal the `wasm_hash` recorded in the manifest (and therefore equal each
 other). Building twice in separate target dirs is what makes the "two builds of
 the same commit are byte-identical" guarantee directly checkable — a cached or
@@ -109,14 +110,16 @@ noop build would trivially match.
 ./scripts/verify-deployment.sh testnet --no-clean
 ```
 
-Requirements: the pinned toolchain (`rust-toolchain.toml`) installed via
-`rustup`, the `wasm32-unknown-unknown` target, and the manifest must contain a
-non-empty `git_sha` and a `wasm_hash` for each contract being verified.
+Requirements: the pinned toolchain (`rust-toolchain.toml`) and Stellar CLI must
+be installed, and the manifest must contain a non-empty `git_sha` and a
+`wasm_hash` for each contract being verified. New deployments record
+`wasm_target`; older manifests can derive it from `wasm_path`.
 
 Reproducibility rests on three pins, so all three land together (issues #562
 and #559):
 
-1. `rust-toolchain.toml` pins an exact rustc (`1.95.0`).
+1. `rust-toolchain.toml` pins the rustc used for the build; `deploy.sh` records
+   the active compiler version in the manifest.
 2. `Cargo.toml` pins `soroban-sdk` to an exact version (`=21.7.7`).
 3. `Cargo.lock` is committed, and verification builds use `--locked`.
 

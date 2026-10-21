@@ -47,10 +47,9 @@ enabled in test/dev resolution. It is surfaced through cargo features and
 
 Each contract also exposes its own `testutils` cargo feature
 (`[features] testutils = ["soroban-sdk/testutils"]`), activated through the
-dev-dependency. A per-contract production build (`stellar contract build`, or
-`cargo build -p <contract> --target wasm32-unknown-unknown --release`, no
+dev-dependency. A production build (`stellar contract build`, with no
 `--tests`/`--dev`) never enables `testutils`, so it cannot leak into a deployed
-wasm.
+wasm. Both deployment and reproducibility verification use this command.
 
 > **Known caveat (pre-existing):** `contracts/testutils` (automint-testutils)
 > enables `soroban-sdk/testutils` in its *regular* `[dependencies]` because it
@@ -59,9 +58,10 @@ wasm.
 > the `testutils` feature into the wasm build, and soroban-sdk aborts that
 > build (`'testutils' feature is not supported on 'wasm' target`). This is a
 > pre-existing workspace quirk, unrelated to the SDK pin — the supported
-> production build path is per-contract (which is what `scripts/deploy.sh`,
-> `scripts/verify-deployment.sh`, and CI use). `cargo build --workspace` (host
-> target) and `cargo test --workspace` are unaffected.
+> production build path is `stellar contract build` (which is what
+> `scripts/deploy.sh` and `scripts/verify-deployment.sh` use).
+> `cargo build --workspace` (host target) and `cargo test --workspace` are
+> unaffected.
 
 ## Routine maintenance
 

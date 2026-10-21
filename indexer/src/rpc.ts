@@ -35,6 +35,8 @@ export interface RpcClient {
     contractIds: string[];
     cursor?: string;
     limit?: number;
+    /** Aborted on shutdown: pagination and retry backoff stop early. */
+    signal?: AbortSignal;
   }): Promise<GetEventsResult>;
 }
 
@@ -50,8 +52,23 @@ function isTransientError(error: unknown): boolean {
   );
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Resolves after `ms`, or early as soon as `signal` aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error("RPC request aborted by shutdown");
 }
 
 async function withRetry<T>(
@@ -60,13 +77,15 @@ async function withRetry<T>(
     maxRetries?: number;
     baseDelayMs?: number;
     maxDelayMs?: number;
-    sleepImpl?: (ms: number) => Promise<void>;
+    signal?: AbortSignal;
+    sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
   } = {},
 ): Promise<T> {
   const {
     maxRetries = DEFAULT_MAX_RETRIES,
     baseDelayMs = DEFAULT_BASE_DELAY_MS,
     maxDelayMs = DEFAULT_MAX_DELAY_MS,
+    signal,
     sleepImpl = sleep,
   } = opts;
 
@@ -76,13 +95,15 @@ async function withRetry<T>(
       return await fn();
     } catch (error) {
       attempt += 1;
-      if (attempt > maxRetries || !isTransientError(error)) throw error;
+      if (attempt > maxRetries || !isTransientError(error) || signal?.aborted) {
+        throw error;
+      }
       const jitter = Math.random() * 0.5 + 0.75; // ±25%
       const delay = Math.min(
         maxDelayMs,
         baseDelayMs * 2 ** (attempt - 1) * jitter,
       );
-      await sleepImpl(delay);
+      await sleepImpl(delay, signal);
     }
   }
 }
@@ -99,8 +120,9 @@ export class SorobanRpcClient implements RpcClient {
     contractIds: string[];
     cursor?: string;
     limit?: number;
+    signal?: AbortSignal;
   }): Promise<GetEventsResult> {
-    const { startLedger, contractIds, cursor: initialCursor } = opts;
+    const { startLedger, contractIds, cursor: initialCursor, signal } = opts;
     const limit = opts.limit ?? this.maxPage;
 
     const filters = [
@@ -116,6 +138,7 @@ export class SorobanRpcClient implements RpcClient {
       let cursor: string | undefined = initialCursor;
 
       do {
+        throwIfAborted(signal);
         const request = cursor
           ? { filters, cursor, limit }
           : { filters, startLedger, limit };
@@ -143,7 +166,7 @@ export class SorobanRpcClient implements RpcClient {
       } while (cursor);
 
       return { events: allEvents, latestLedger };
-    });
+    }, { signal });
   }
 }
 

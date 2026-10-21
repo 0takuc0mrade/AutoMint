@@ -76,7 +76,7 @@ export class Poller {
    * Run one poll cycle. Throws on RPC failure (caller decides whether to
    * retry/sleep); returns counts for observability.
    */
-  private async pollOnceInternal(): Promise<PollResult> {
+  private async pollOnceInternal(signal?: AbortSignal): Promise<PollResult> {
     const checkpoint = await this.currentCheckpoint();
     const startLedger =
       checkpoint === 0 ? this.defaultStartLedger : checkpoint + 1;
@@ -91,7 +91,12 @@ export class Poller {
     const { events, latestLedger } = await this.rpc.getEvents({
       startLedger,
       contractIds,
+      signal,
     });
+
+    // Shutdown arrived mid-cycle: drop the fetched batch so the checkpoint
+    // stays put and the next start re-fetches it (#662).
+    if (signal?.aborted) throw new Error("poll aborted by shutdown");
 
     const decoder = makeDecoder(this.config);
     const decoded: DecodedEvent[] = [];
@@ -131,12 +136,14 @@ export class Poller {
     return { fetched: events.length, inserted, skipped, latestLedger };
   }
 
-  async pollOnce(): Promise<PollResult> {
+  async pollOnce(signal?: AbortSignal): Promise<PollResult> {
     try {
-      const result = await this.pollOnceInternal();
+      const result = await this.pollOnceInternal(signal);
       this.lastSuccessfulPollAt = Date.now();
       return result;
     } catch (error) {
+      // An abort is a shutdown, not an RPC failure: don't mark readiness red.
+      if (signal?.aborted) throw error;
       this.lastFailureAt = Date.now();
       this.lastError = error instanceof Error ? error.message : String(error);
       throw error;
@@ -177,12 +184,17 @@ export class Poller {
    * between iterations; a failed iteration is logged and the loop continues
    * (the retry wrapper inside the RPC client already absorbs transient RPC
    * errors).
+   *
+   * Abort is cooperative: an in-flight cycle is abandoned before it writes,
+   * and the returned promise settles only once no poll is still running, so
+   * the caller may close the database as soon as `run` resolves (#662).
    */
   async run(intervalMs: number, signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       try {
-        await this.pollOnce();
+        await this.pollOnce(signal);
       } catch (error) {
+        if (signal.aborted) break;
         this.log("poll iteration failed", { error: (error as Error).message });
       }
       if (signal.aborted) break;

@@ -670,6 +670,29 @@ impl MarketplaceContract {
         Ok(listing_id)
     }
 
+    /// Purchase the escrowed bot behind `listing_id` for `buyer`.
+    ///
+    /// Fee/royalty split on `listing.price`:
+    /// - `platform_fee = price * fee_bps / 10_000` stays in the contract and
+    ///   accrues to `fees_accrued(currency)` for `withdraw_fees`;
+    /// - `royalty = price * royalty_bps / 10_000` is paid to the bot's
+    ///   original minter, unless the minter is the seller (then the royalty
+    ///   is added back to the seller's payout so no funds are stranded);
+    /// - the seller receives `price - platform_fee - royalty` (plus the
+    ///   royalty when waived as above).
+    ///
+    /// The bot transfer to `buyer` happens *before* any token leg; if a
+    /// later leg fails the entire invocation rolls back, so the buyer can
+    /// never hold both the bot and their payment. Emits `sold`.
+    ///
+    /// Auth: `buyer.require_auth()`; the buyer must not be the seller.
+    /// Order: existence -> authorization -> state validity -> effects.
+    ///
+    /// Errors: `ListingNotFound`, `SelfPurchase`, `ListingNotActive`,
+    /// `ListingExpired`, `ContractPaused`, `UnsupportedCurrency`,
+    /// `ListingStale` (escrow no longer holds the bot — the listing is
+    /// deactivated before the error returns), `BotTransferFailed`,
+    /// `PaymentFailed`, `Overflow`.
     pub fn buy_bot(env: Env, buyer: Address, listing_id: u64) -> Result<(), MarketplaceError> {
         Self::check_and_set_lock(&env)?;
 
@@ -1360,6 +1383,9 @@ impl MarketplaceContract {
         (purchases, next)
     }
 
+    /// The stored configuration: admin, bot NFT contract, platform fee
+    /// (`fee_bps`) and creator royalty (`royalty_bps`), both in basis
+    /// points. Read-only.
     pub fn config(env: Env) -> Config {
         env.storage().instance().get(&DataKey::Config).unwrap()
     }
@@ -1510,6 +1536,10 @@ impl MarketplaceContract {
         Ok(())
     }
 
+    /// Whether the marketplace is currently paused. While paused,
+    /// `list_bot`, `buy_bot` and `update_price` fail with `ContractPaused`;
+    /// `cancel_listing` keeps working so sellers can always retrieve
+    /// escrowed bots. Read-only; `false` when never paused.
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
@@ -1546,6 +1576,10 @@ impl MarketplaceContract {
         result
     }
 
+    /// Maximum number of *active* listings one seller may hold at once
+    /// (default 50). Cancelled or completed listings do not count.
+    /// `list_bot` fails with `TooManyListings` when the cap is reached.
+    /// Read-only.
     pub fn get_listing_cap(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -1553,6 +1587,14 @@ impl MarketplaceContract {
             .unwrap_or(50)
     }
 
+    /// Admin-only: set the per-seller active-listing cap (#438). Prevents
+    /// one account flooding the market with dust listings. Applies to
+    /// future `list_bot` calls; sellers already at the old cap are not
+    /// evicted. Emits `listing_cap_upd`.
+    ///
+    /// Auth: admin only.
+    ///
+    /// Errors: `NotInitialized`.
     pub fn set_listing_cap(env: Env, new_cap: u32) -> Result<(), MarketplaceError> {
         let config: Config = env
             .storage()
@@ -1570,6 +1612,9 @@ impl MarketplaceContract {
         Ok(())
     }
 
+    /// Number of active listings `seller` currently holds in the escrow
+    /// marketplace. Bounded by `get_listing_cap`. Read-only; `0` when the
+    /// seller has never listed or holds no active listings.
     pub fn get_user_active_listing_count(env: Env, seller: Address) -> u32 {
         env.storage()
             .persistent()
@@ -1577,6 +1622,10 @@ impl MarketplaceContract {
             .unwrap_or(0)
     }
 
+    /// The bot NFT contract this marketplace escrows and settles trades
+    /// through. Set at `initialize` (or by admin `set_bot_nft`) and
+    /// probed to respond to the bot_nft interface. Read-only; panics if
+    /// the contract was never initialized.
     pub fn bot_nft(env: Env) -> Address {
         let config: Config = env.storage().instance().get(&DataKey::Config).unwrap();
         config.bot_nft

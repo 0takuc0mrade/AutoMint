@@ -217,7 +217,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "autouser29"
+                  "string": "autouser30"
                 }
               ]
             }
@@ -797,7 +797,7 @@
                         "symbol": "display_name"
                       },
                       "val": {
-                        "string": "autouser29"
+                        "string": "autouser30"
                       }
                     },
                     {
@@ -821,7 +821,7 @@
                         "symbol": "username"
                       },
                       "val": {
-                        "string": "autouser29"
+                        "string": "autouser30"
                       }
                     }
                   ]
@@ -843,7 +843,7 @@
                   "symbol": "Username"
                 },
                 {
-                  "string": "autouser29"
+                  "string": "autouser30"
                 }
               ]
             },
@@ -863,7 +863,7 @@
                       "symbol": "Username"
                     },
                     {
-                      "string": "autouser29"
+                      "string": "autouser30"
                     }
                   ]
                 },
@@ -965,6 +965,37 @@
                           "vec": [
                             {
                               "symbol": "TotalUsers"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "UserListPage"
+                            },
+                            {
+                              "u32": 0
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": [
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "UserListPageCount"
                             }
                           ]
                         },
@@ -2742,7 +2773,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "autouser29"
+                  "string": "autouser30"
                 }
               ]
             }

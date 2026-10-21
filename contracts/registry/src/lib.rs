@@ -268,6 +268,11 @@ impl RegistryContract {
 
 #[contractimpl]
 impl RegistryContract {
+    /// One-time setup: records the admin, zeroes the cached user count and
+    /// the empty leaderboard. Fails with `AlreadyInitialized` if called
+    /// twice. Emits `init`.
+    ///
+    /// Auth: `admin.require_auth()`.
     pub fn initialize(env: Env, admin: Address) -> Result<(), RegistryError> {
         if env.storage().instance().has(&DataKey::Initialized) {
             return Err(RegistryError::AlreadyInitialized);
@@ -291,6 +296,16 @@ impl RegistryContract {
         Ok(())
     }
 
+    /// Register `user` with `username` (1–32 bytes; uniqueness is checked
+    /// against the ASCII-lowercased form, so `Alice` and `alice` collide,
+    /// while the original casing is preserved as `display_name`). Creates
+    /// the zeroed profile, indexes the user in the paged list, and joins
+    /// the leaderboard while it has room. Emits `register`.
+    ///
+    /// Auth: `user.require_auth()`.
+    ///
+    /// Errors: `AlreadyRegistered`, `UsernameTaken` (taken, empty, or over
+    /// 32 bytes), `Overflow` (user counter exhausted).
     pub fn register(env: Env, user: Address, username: String) -> Result<(), RegistryError> {
         user.require_auth();
 
@@ -442,6 +457,10 @@ impl RegistryContract {
             .ok_or(RegistryError::NotRegistered)
     }
 
+    /// Lifetime points for a registered user, falling back to the profile
+    /// field when the denormalized `UserPoints` key is absent.
+    ///
+    /// Errors: `NotRegistered`.
     pub fn get_points(env: Env, user: Address) -> Result<u64, RegistryError> {
         if !env
             .storage()
@@ -463,6 +482,11 @@ impl RegistryContract {
             }))
     }
 
+    /// Number of bots the user holds (as tracked by bot_nft through
+    /// `increment_bot_count` / `decrement_bot_count`), falling back to the
+    /// profile field when the denormalized key is absent.
+    ///
+    /// Errors: `NotRegistered`.
     pub fn get_bot_count(env: Env, user: Address) -> Result<u32, RegistryError> {
         if !env
             .storage()
@@ -484,6 +508,11 @@ impl RegistryContract {
             }))
     }
 
+    /// Cumulative AMT the user has claimed (in token base units, `i128`),
+    /// falling back to the profile field when the denormalized key is
+    /// absent. Monotonically non-decreasing; see `add_claimed_amt`.
+    ///
+    /// Errors: `NotRegistered`.
     pub fn get_claimed_amt(env: Env, user: Address) -> Result<i128, RegistryError> {
         if !env
             .storage()
@@ -525,9 +554,15 @@ impl RegistryContract {
         Ok(profiles)
     }
 
-    // #318: Configure the authorized writer set. Admin-only, idempotent. Off by
-    // default until called, then only the configured addresses may mutate gated
-    // fields.
+    /// Admin-only: configure the authorized writer set (#318). Once set,
+    /// only the configured accrual contract may call `add_points` /
+    /// `add_claimed_amt`, and only the configured bot_nft contract may call
+    /// `increment_bot_count`. Before this is called the gated functions
+    /// remain open (backward compatible). Idempotent. Emits `writers`.
+    ///
+    /// Auth: admin only.
+    ///
+    /// Errors: `Unauthorized` when no admin is stored.
     pub fn set_writers(env: Env, accrual: Address, bot_nft: Address) -> Result<(), RegistryError> {
         let admin = env
             .storage()
@@ -545,6 +580,8 @@ impl RegistryContract {
         Ok(())
     }
 
+    /// The configured writer set, or `None` when writers were never
+    /// configured (in which case the gated functions stay open). Read-only.
     pub fn get_writers(env: Env) -> Option<Writers> {
         env.storage().instance().get(&DataKey::Writers)
     }
@@ -571,6 +608,16 @@ impl RegistryContract {
         Ok(())
     }
 
+    /// Credit `points` to a registered user's lifetime and current-season
+    /// totals, updating both leaderboards. Emits `addpoints`.
+    ///
+    /// Writer-only: once `set_writers` has been called, only the accrual
+    /// contract may invoke this; before that it stays open for backward
+    /// compatibility. `points == 0` is a no-op.
+    ///
+    /// Errors: `NotRegistered`, `ImplausiblePoints` (above
+    /// `MAX_POINTS_PER_CALL`, a sanity bound against ledger-corrupting
+    /// credits), `Overflow` (total would exceed `u64`).
     pub fn add_points(env: Env, user: Address, points: u64) -> Result<(), RegistryError> {
         // #318: only the configured accrual writer may mutate points.
         Self::require_accrual(&env)?;
@@ -618,6 +665,12 @@ impl RegistryContract {
         Ok(())
     }
 
+    /// Admin-only: overwrite a registered user's lifetime points with
+    /// `value` and refresh the lifetime leaderboard. Emits `setpts`.
+    ///
+    /// Auth: admin only.
+    ///
+    /// Errors: `NotInitialized`, `NotRegistered`.
     pub fn set_points(env: Env, user: Address, value: u64) -> Result<(), RegistryError> {
         let admin: Address = env
             .storage()
@@ -637,6 +690,14 @@ impl RegistryContract {
         Ok(())
     }
 
+    /// Add one bot to a registered user's count. Emits `inc_bot` with the
+    /// post-increment count.
+    ///
+    /// Writer-only: once `set_writers` has been called, only the bot_nft
+    /// contract may invoke this; before that it stays open for backward
+    /// compatibility.
+    ///
+    /// Errors: `NotRegistered`.
     pub fn increment_bot_count(env: Env, user: Address) -> Result<(), RegistryError> {
         // #318: only the configured bot_nft writer may mutate bot counts.
         Self::require_bot_nft(&env)?;
@@ -658,6 +719,14 @@ impl RegistryContract {
         Ok(())
     }
 
+    /// Subtract one bot from a registered user's count, floored at zero.
+    /// Authenticated by the user themself (or a caller the user signed
+    /// for), not by the writer set, so an owner can always sync their count
+    /// down after a burn. Emits `dec_bot` with the post-decrement count.
+    ///
+    /// Auth: `user.require_auth()`.
+    ///
+    /// Errors: `NotRegistered`.
     pub fn decrement_bot_count(env: Env, user: Address) -> Result<(), RegistryError> {
         user.require_auth();
         let mut profile: UserProfile = env
@@ -704,6 +773,9 @@ impl RegistryContract {
         Ok(())
     }
 
+    /// Registered addresses on page `page` of the registration-ordered
+    /// list (`PAGE_SIZE` = 200 per page). An out-of-range page returns an
+    /// empty vector. Read-only.
     pub fn get_users(env: Env, page: u32) -> Vec<Address> {
         let page_count = env
             .storage()
@@ -930,8 +1002,10 @@ impl RegistryContract {
         Ok(UNRANKED)
     }
 
-    // Missing record (queried before initialize()) correctly defaults to 0 —
-    // zero registered users is the true state, not an error.
+    /// Cached count of registered users. A missing record (queried before
+    /// `initialize()`) correctly defaults to 0 — zero registered users is
+    /// the true state, not an error. Reconciled against the paged user
+    /// index by `verify_user_count`. Read-only.
     pub fn total_users(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -955,11 +1029,7 @@ impl RegistryContract {
                 .get(&DataKey::UserListPage(page_index))
                 .unwrap_or_else(|| Vec::new(&env));
             for user in page.iter() {
-                if env
-                    .storage()
-                    .persistent()
-                    .has(&DataKey::UserProfile(user))
-                {
+                if env.storage().persistent().has(&DataKey::UserProfile(user)) {
                     count = count.checked_add(1).ok_or(RegistryError::Overflow)?;
                 }
             }
@@ -1007,6 +1077,101 @@ impl RegistryContract {
         count
     }
 
+    /// Permissionless profile bump for wallet reconnects or stale
+    /// registrations (#364). Extends the profile's persistent TTL back to the
+    /// maximum live window supported by the network (roughly `LEDGER_BUMP`
+    /// ledgers ≈ 7 days) before archival can claim it. The username mapping
+    /// is allowed to age out independently.
+    ///
+    /// Emits `bump` with the user address and current timestamp.
+    ///
+    /// Errors: `NotRegistered`.
+    pub fn bump_profile(env: Env, user: Address) -> Result<(), RegistryError> {
+        let _profile: UserProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserProfile(user.clone()))
+            .ok_or(RegistryError::NotRegistered)?;
+
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserProfile(user.clone()),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
+        // The profile record is the canonical liveness signal for the registry.
+        // The username mapping is allowed to age out independently, and touching
+        // it here can fail if it has already been archived before the profile is
+        // bumped.
+        env.storage()
+            .instance()
+            .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        env.events()
+            .publish((symbol_short!("bump"), user), env.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Delete the caller's profile and free the username (#364). Refuses
+    /// while the user still holds bots (`bot_count > 0`); the lifetime point
+    /// total survives in a [`UserTombstone`]. Removes the user from the
+    /// paged user index and the maintained leaderboard, decrements
+    /// `TotalUsers`, and emits `unreg`.
+    ///
+    /// Auth: `user.require_auth()`.
+    ///
+    /// Errors: `NotRegistered`, `Unauthorized` (bots still held).
+    pub fn unregister(env: Env, user: Address) -> Result<(), RegistryError> {
+        user.require_auth();
+        let profile: UserProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserProfile(user.clone()))
+            .ok_or(RegistryError::NotRegistered)?;
+        if profile.bot_count > 0 {
+            return Err(RegistryError::Unauthorized);
+        }
+
+        let username = profile.username.clone();
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Username(username.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UserProfile(user.clone()));
+        let tombstone = UserTombstone {
+            address: user.clone(),
+            username,
+            total_points: profile.total_points,
+            claimed_amt: profile.claimed_amt,
+            unregistered_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserTombstone(user.clone()), &tombstone);
+        Self::remove_user_from_page(&env, &user);
+        Self::remove_from_top(&env, &user);
+
+        let total: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalUsers)
+            .unwrap_or(0);
+        if total > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalUsers, &(total - 1));
+        }
+
+        env.events().publish(
+            (symbol_short!("unreg"), user.clone()),
+            tombstone.total_points,
+        );
+        Ok(())
+    }
+
+    /// The admin address recorded at initialization. Read-only.
+    ///
+    /// Errors: `NotInitialized` before the contract is set up.
     pub fn get_admin(env: Env) -> Result<Address, RegistryError> {
         env.storage()
             .instance()
@@ -1877,6 +2042,9 @@ mod test {
     #[test]
     fn test_verify_user_count_repairs_drift_after_failed_registrations() {
         let (env, _admin, client) = setup();
+        // 105 registrations plus repeated full index scans exceeds the default
+        // test budget; same unlimited budget as the other heavy tests here.
+        env.budget().reset_unlimited();
         for index in 0..100_u32 {
             let user = Address::generate(&env);
             client.register(
@@ -1912,9 +2080,9 @@ mod test {
         env.ledger().set_timestamp(20);
         client.register(&second, &String::from_str(&env, "second"));
 
-        assert_eq!(client.users_since(20), 1);
-        assert_eq!(client.users_since(10), 2);
-        assert_eq!(client.users_since(21), 0);
+        assert_eq!(client.users_since(&20), 1);
+        assert_eq!(client.users_since(&10), 2);
+        assert_eq!(client.users_since(&21), 0);
     }
 
     // #373: usernames are case-insensitive for uniqueness but preserve the

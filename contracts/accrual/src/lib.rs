@@ -176,6 +176,17 @@ pub struct AccrualContract;
 
 #[contractimpl]
 impl AccrualContract {
+    /// One-time setup: stores the admin and the bot_nft / registry / token
+    /// contract addresses, reads the token's decimals to derive `amt_scale`
+    /// (#410), and wires itself into the bot_nft contract via `set_accrual`
+    /// so future mints/transfers sync user rates.
+    ///
+    /// Auth: `admin.require_auth()`.
+    ///
+    /// Errors: `AlreadyInitialized` on a second call, `InvalidConfig` when
+    /// `points_per_amt` is zero, `TokenConfigFailed` when the token's
+    /// `decimals` call fails, `BotNftCallFailed` when the wiring call into
+    /// bot_nft fails.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -287,14 +298,20 @@ impl AccrualContract {
         }));
         env.authorize_as_current_contract(auth_entries);
 
-        let result = TokenClient::new(&env, &token)
-            .try_set_mint_limit(&max_per_window, &window_ledgers);
+        let result =
+            TokenClient::new(&env, &token).try_set_mint_limit(&max_per_window, &window_ledgers);
         if result.is_err() || matches!(&result, Ok(Err(_))) {
             return Err(AccrualError::TokenConfigFailed);
         }
         Ok(())
     }
 
+    /// Admin-only: block `user` from syncing rates, claiming, or being
+    /// settled until [`Self::unfreeze`] is called (#413). Emits `freeze`
+    /// with `true`.
+    ///
+    /// Auth: admin only. Fails with `NotInitialized` when the contract has
+    /// no admin.
     pub fn freeze(env: Env, user: Address) -> Result<(), AccrualError> {
         require_admin(&env)?;
         env.storage()
@@ -309,6 +326,11 @@ impl AccrualContract {
         Ok(())
     }
 
+    /// Admin-only: lift a freeze previously set by [`Self::freeze`].
+    /// Emits `freeze` with `false`.
+    ///
+    /// Auth: admin only. Fails with `NotInitialized` when the contract has
+    /// no admin.
     pub fn unfreeze(env: Env, user: Address) -> Result<(), AccrualError> {
         require_admin(&env)?;
         env.storage()
@@ -317,6 +339,17 @@ impl AccrualContract {
         env.events().publish((symbol_short!("freeze"), user), false);
         Ok(())
     }
+    /// Settle points earned since `last_claim_ts` into `carry_points` and
+    /// `lifetime_points`, then refresh `rate` from the bot_nft contract's
+    /// `get_user_total_rate`. Permissionless; safe because it only banks
+    /// what time has already earned. A sequence of short intervals is
+    /// preserved via the sub-hour `leftover` remainder (#909).
+    ///
+    /// Returns the number of points settled (0 when there was nothing to
+    /// settle or the user has never started accruing).
+    ///
+    /// Errors: `Frozen` for a frozen user, `NotInitialized` when the
+    /// bot_nft address is missing.
     pub fn sync_rate(env: Env, user: Address) -> Result<u64, AccrualError> {
         require_unfrozen(&env, &user)?;
         let Some(mut accrual) = env
@@ -422,6 +455,11 @@ impl AccrualContract {
         Ok(())
     }
 
+    /// Points the user has earned since their last claim/settle, including
+    /// the carried sub-hour remainder. Read-only view of what a `claim` or
+    /// `settle` would bank right now.
+    ///
+    /// Errors: `NotStarted` when the user has no accrual record.
     pub fn pending_points(env: Env, user: Address) -> Result<u128, AccrualError> {
         let accrual: UserAccrual = env
             .storage()
@@ -466,6 +504,9 @@ impl AccrualContract {
         Ok(seconds as u64)
     }
 
+    /// The user's current accrual record (`last_claim_ts`, `carry_points`,
+    /// `lifetime_points`, `rate`, `started_at`), or `None` if the user has
+    /// never started accruing. Read-only; does not settle.
     pub fn get_accrual_state(env: Env, user: Address) -> Option<AccrualState> {
         read_accrual_state(&env, &user)
     }
@@ -581,6 +622,25 @@ impl AccrualContract {
         Ok(settled)
     }
 
+    /// Settle the user's earned points and mint AMT for every full
+    /// `points_per_amt` worth. Points are credited to the registry, whole
+    /// tokens are minted from `token_contract` (scaled by `amt_scale`, #410),
+    /// and the sub-threshold carry is kept for the next claim.
+    ///
+    /// Auth: `user.require_auth()`. A reentrant call returns `Ok(0)`
+    /// without minting.
+    ///
+    /// `token_contract` and `registry` are passed per call rather than read
+    /// from storage for the token so a deployment can point claims at a
+    /// rotated token while historical callers keep working.
+    ///
+    /// Returns the number of points settled (not tokens minted).
+    ///
+    /// Errors: `Frozen` for a frozen user, `NotStarted` when accrual never
+    /// began, `NotInitialized` when config is missing, `RegistryCallFailed`
+    /// when the registry credit fails (a `fail_reg` event carries the error
+    /// code), `TokenMintFailed` when the mint fails (a `fail_mint` event
+    /// carries the error code).
     pub fn claim(
         env: Env,
         user: Address,
@@ -700,6 +760,16 @@ impl AccrualContract {
         Ok(pending as i128)
     }
 
+    /// Admin-only: change how many points one whole AMT token costs. The
+    /// new value must be non-zero and within a 2x jump of the current
+    /// value, so a misconfiguration cannot silently devalue or revalue
+    /// every user's carry. `amt_scale` is preserved. Emits `cfg_upd` with
+    /// the old and new values.
+    ///
+    /// Auth: admin only.
+    ///
+    /// Errors: `NotInitialized`, `InvalidConfig` when `points_per_amt` is
+    /// zero or moves more than 2x in either direction.
     pub fn set_points_per_amt(env: Env, points_per_amt: u64) -> Result<(), AccrualError> {
         let admin: Address = env
             .storage()
@@ -741,6 +811,9 @@ impl AccrualContract {
         Ok(())
     }
 
+    /// The accrual admin address recorded at initialization.
+    ///
+    /// Errors: `NotInitialized` before the contract is set up.
     pub fn get_accrual_admin(env: Env) -> Result<Address, AccrualError> {
         env.storage()
             .instance()
@@ -748,6 +821,15 @@ impl AccrualContract {
             .ok_or(AccrualError::NotInitialized)
     }
 
+    /// Settle `user`'s pending points to the registry, bank them into
+    /// `carry_points`/`lifetime_points`, then zero the rate so accrual
+    /// pauses. The record is kept (not deleted) so the carry and the
+    /// sub-hour remainder stay claimable (#908); `start_accrual` resumes
+    /// by re-syncing the rate from bot_nft.
+    ///
+    /// Auth: `user.require_auth()`.
+    ///
+    /// Errors: `NotStarted` when the user has no accrual record.
     pub fn stop_accrual(env: Env, user: Address, registry: Address) -> Result<(), AccrualError> {
         user.require_auth();
         let mut accrual: UserAccrual = env
@@ -786,6 +868,9 @@ impl AccrualContract {
         Ok(())
     }
 
+    /// The accrual configuration (`points_per_amt`, `amt_scale`).
+    ///
+    /// Errors: `NotInitialized` before the contract is set up.
     pub fn config(env: Env) -> Result<Config, AccrualError> {
         env.storage()
             .instance()
@@ -1795,8 +1880,18 @@ mod auth_tests {
         let bot_nft = env.register_contract(None, automint_bot_nft::BotNFTContract);
         let bot_nft_client = automint_bot_nft::BotNFTContractClient::new(&env, &bot_nft);
         let registry = Address::generate(&env);
-        let token = Address::generate(&env);
+        // `initialize` reads the token's decimals (#410), so the token must
+        // be a real, initialized contract — a bare address fails with
+        // `TokenConfigFailed` before the bot_nft wiring is ever attempted.
+        let token = env.register_contract(None, automint_token::AMTToken);
+        let token_client = automint_token::AMTTokenClient::new(&env, &token);
         env.mock_all_auths();
+        token_client.initialize(
+            &admin,
+            &7u32,
+            &String::from_str(&env, "AutoMint Token"),
+            &String::from_str(&env, "AMT"),
+        );
         bot_nft_client.initialize(&admin, &registry, &token);
 
         env.mock_auths(&[MockAuth {
@@ -1830,10 +1925,21 @@ mod auth_tests {
         let id = env.register_contract(None, AccrualContract);
         let client = AccrualContractClient::new(&env, &id);
         let admin = Address::generate(&env);
+        // Left uninitialized on purpose: its `set_accrual` call will fail,
+        // exercising the `BotNftCallFailed` path.
         let bot_nft = env.register_contract(None, automint_bot_nft::BotNFTContract);
         let registry = Address::generate(&env);
-        let token = Address::generate(&env);
+        // The token decimals check (#410) runs before the bot_nft wiring, so
+        // a real initialized token is required to reach that path at all.
+        let token = env.register_contract(None, automint_token::AMTToken);
+        let token_client = automint_token::AMTTokenClient::new(&env, &token);
         env.mock_all_auths();
+        token_client.initialize(
+            &admin,
+            &7u32,
+            &String::from_str(&env, "AutoMint Token"),
+            &String::from_str(&env, "AMT"),
+        );
 
         let result = client.try_initialize(&admin, &bot_nft, &registry, &token, &100_u64);
         assert_eq!(result, Err(Ok(AccrualError::BotNftCallFailed)));

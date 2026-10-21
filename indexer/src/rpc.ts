@@ -38,17 +38,32 @@ export interface RpcClient {
     /** Aborted on shutdown: pagination and retry backoff stop early. */
     signal?: AbortSignal;
   }): Promise<GetEventsResult>;
+  /** Oldest ledger the node still retains (`getHealth`); `getEvents` rejects older start ledgers. */
+  getOldestLedger(signal?: AbortSignal): Promise<number>;
 }
 
 const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_BASE_DELAY_MS = 250;
 const DEFAULT_MAX_DELAY_MS = 15_000;
 
-function isTransientError(error: unknown): boolean {
+/** HTTP status of a failed request (axios sets `response.status`), if any. */
+function httpStatus(error: Error): number | undefined {
+  const status = (error as { response?: { status?: unknown } }).response?.status;
+  return typeof status === "number" ? status : undefined;
+}
+
+/**
+ * Decide retryability from the HTTP status on the error object, never from
+ * digits in the message: an RPC message such as "startLedger must be between
+ * 51234 and 61234" is permanent, not a 5xx (#1229). JSON-RPC errors arrive as
+ * plain `{ code, message }` objects over HTTP 200 and are never retried.
+ */
+export function isTransientError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  const msg = error.message;
-  return /fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket|timeout|429|5\d\d|rate limit/i.test(
-    msg,
+  const status = httpStatus(error);
+  if (status !== undefined) return status === 429 || (status >= 500 && status <= 599);
+  return /fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket|timeout|rate limit/i.test(
+    error.message,
   );
 }
 
@@ -167,6 +182,11 @@ export class SorobanRpcClient implements RpcClient {
 
       return { events: allEvents, latestLedger };
     }, { signal });
+  }
+
+  async getOldestLedger(signal?: AbortSignal): Promise<number> {
+    const health = await withRetry(() => this.server.getHealth(), { signal });
+    return health.oldestLedger;
   }
 }
 

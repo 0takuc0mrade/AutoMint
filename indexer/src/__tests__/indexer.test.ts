@@ -136,6 +136,7 @@ describe("Poller", () => {
         }
         return { events: [], latestLedger: 500 };
       },
+      getOldestLedger: async () => 1,
     };
     const poller = new Poller({ rpc, db, config });
 
@@ -157,6 +158,45 @@ describe("Poller", () => {
     expect(
       poller.health(30_000, Date.parse(lastSuccess!) + 30_001).readiness,
     ).toMatchObject({ ok: false, stale: true });
+    db.close();
+  });
+
+  it("cold start fetches the configured start ledger itself (#1228)", async () => {
+    const db = new IndexerDb(":memory:");
+    const first = toRawRpcEvent(
+      makeRawEvent({
+        contractId: CTOK,
+        topics: [sym("mint"), addr(G1)],
+        value: i128(7),
+        ledger: 500,
+        seq: 0,
+      }),
+    );
+    const rpc = new FakeRpcClient([
+      { events: [first], latestLedger: 510, cursor: null },
+      { events: [], latestLedger: 511, cursor: null },
+    ]);
+    const poller = new Poller({ rpc, db, config, defaultStartLedger: 500 });
+
+    await poller.pollOnce();
+    await poller.pollOnce();
+
+    expect(rpc.calls.map((c) => c.startLedger)).toEqual([500, 511]);
+    expect(db.sumAmtMinted()).toBe("7");
+    db.close();
+  });
+
+  it("cold start without a start ledger begins at the RPC's oldest retained ledger (#1228)", async () => {
+    const db = new IndexerDb(":memory:");
+    const rpc = new FakeRpcClient(
+      [{ events: [], latestLedger: 61_234, cursor: null }],
+      { oldestLedger: 51_234 },
+    );
+    const poller = new Poller({ rpc, db, config });
+
+    await poller.pollOnce();
+
+    expect(rpc.calls[0].startLedger).toBe(51_234);
     db.close();
   });
 });

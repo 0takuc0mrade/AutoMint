@@ -107,8 +107,12 @@ export class FakeRpcClient implements RpcClient {
   public calls: Array<{ startLedger: number; cursor?: string }> = [];
   constructor(
     private readonly pages: FakeRpcScriptPage[],
-    private readonly options: { rewindAfter?: number } = {},
+    private readonly options: { rewindAfter?: number; oldestLedger?: number } = {},
   ) {}
+
+  async getOldestLedger(): Promise<number> {
+    return this.options.oldestLedger ?? 1;
+  }
 
   async getEvents(opts: {
     startLedger: number;

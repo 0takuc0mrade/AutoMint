@@ -13,7 +13,7 @@
 import React from "react";
 import { renderHook, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { getAddress, getNetwork } from "@stellar/freighter-api";
+import { getAddress, getNetwork, requestAccess } from "@stellar/freighter-api";
 import { toast } from "sonner";
 import { useWallet } from "../hooks/useWallet";
 import { useWalletStore } from "@/store/walletStore";
@@ -412,5 +412,122 @@ describe("useWallet silent session restore (#456)", () => {
 
     expect(mockGetAddress).not.toHaveBeenCalled();
     expect(useWalletStore.getState().status).toBe("disconnected");
+  });
+});
+
+/**
+ * Freighter error responses (#658).
+ *
+ * Freighter API v3 resolves a failed call with an `error` field instead of
+ * rejecting. A failed call must never mark the wallet connected, set an empty
+ * address, or flag a network mismatch.
+ */
+describe("useWallet Freighter error responses (#658)", () => {
+  const mockRequestAccess = requestAccess as jest.MockedFunction<typeof requestAccess>;
+  const freighterError = { code: -1, message: "Freighter is locked" };
+  const resetStore = () =>
+    useWalletStore.setState({
+      status: "disconnected",
+      publicKey: null,
+      network: null,
+      networkMismatch: false,
+      error: null,
+      wasConnected: false,
+      lastAddress: null,
+    });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // useWallet only offers connect when Freighter is present on window.
+    Object.defineProperty(window, "freighter", { value: {}, configurable: true });
+    mockRequestAccess.mockResolvedValue({ address: "GACCOUNT_A" } as never);
+    mockGetAddress.mockResolvedValue({ address: "GACCOUNT_A" } as never);
+    mockGetNetwork.mockResolvedValue({ networkPassphrase: TESTNET } as never);
+    resetStore();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    delete (window as { freighter?: unknown }).freighter;
+    act(() => resetStore());
+  });
+
+  const connectWallet = async () => {
+    const wrapper = makeWrapper(makeQueryClient());
+    const { result } = renderHook(() => useWallet(), { wrapper });
+    await act(async () => {
+      await result.current.connect();
+    });
+  };
+
+  it("does not connect when requestAccess resolves with an error", async () => {
+    mockRequestAccess.mockResolvedValue({ address: "", error: freighterError } as never);
+
+    await connectWallet();
+
+    expect(useWalletStore.getState().status).toBe("error");
+    expect(useWalletStore.getState().publicKey).toBeNull();
+    expect(useWalletStore.getState().wasConnected).toBe(false);
+    expect(toast.error).toHaveBeenCalledWith(
+      "Freighter is locked",
+      expect.objectContaining({ id: "wallet-connect" })
+    );
+  });
+
+  it("does not connect when getAddress resolves with an empty address", async () => {
+    mockGetAddress.mockResolvedValue({ address: "" } as never);
+
+    await connectWallet();
+
+    expect(useWalletStore.getState().status).toBe("error");
+    expect(useWalletStore.getState().publicKey).toBeNull();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Freighter did not return an account address",
+      expect.objectContaining({ id: "wallet-connect" })
+    );
+  });
+
+  it("does not connect when getNetwork resolves with an error", async () => {
+    mockGetNetwork.mockResolvedValue({ networkPassphrase: "", error: freighterError } as never);
+
+    await connectWallet();
+
+    expect(useWalletStore.getState().status).toBe("error");
+    expect(useWalletStore.getState().publicKey).toBeNull();
+    expect(useWalletStore.getState().network).toBeNull();
+    expect(useWalletStore.getState().networkMismatch).toBe(false);
+  });
+
+  it("ignores an errored poll tick instead of reporting a network mismatch", async () => {
+    jest.useFakeTimers();
+    useWalletStore.setState({
+      status: "connected",
+      publicKey: "GACCOUNT_A",
+      network: TESTNET,
+    });
+    mockGetNetwork.mockResolvedValue({ networkPassphrase: "", error: freighterError } as never);
+
+    const wrapper = makeWrapper(makeQueryClient());
+    renderHook(() => useWallet(), { wrapper });
+
+    await act(async () => {
+      jest.advanceTimersByTime(30_000);
+    });
+
+    expect(useWalletStore.getState().status).toBe("connected");
+    expect(useWalletStore.getState().publicKey).toBe("GACCOUNT_A");
+    expect(useWalletStore.getState().networkMismatch).toBe(false);
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("does not restore a session when getNetwork resolves with an error", async () => {
+    useWalletStore.setState({ wasConnected: true, lastAddress: "GACCOUNT_A" });
+    mockGetNetwork.mockResolvedValue({ networkPassphrase: "", error: { code: -1, message: "Unknown failure" } } as never);
+
+    renderHook(() => useWallet(), { wrapper: makeWrapper(makeQueryClient()) });
+    await act(async () => {});
+
+    expect(useWalletStore.getState().status).toBe("disconnected");
+    expect(useWalletStore.getState().publicKey).toBeNull();
   });
 });

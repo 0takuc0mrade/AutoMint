@@ -12,6 +12,9 @@
  *
  * All i128 amounts are returned as decimal strings to avoid JS number
  * precision loss (the contracts store prices/amounts as i128).
+ *
+ * `days`, `limit` and `offset` must be whole numbers; anything else is
+ * rejected with HTTP 400 (#660).
  */
 import express from "express";
 import path from "node:path";
@@ -24,6 +27,28 @@ export interface ApiOptions {
   config: ContractConfig;
   /** Additional health info (e.g. last poll error/timestamp) fed by the caller. */
   extraHealth?: () => Record<string, unknown>;
+}
+
+/** Raised for a query parameter that is not a whole number; mapped to HTTP 400. */
+class InvalidQueryParam extends Error {}
+
+/**
+ * Parse an integer query parameter (#660). Only plain decimal integers are
+ * accepted, so `abc`, `1.5`, `NaN` and `1e3` are rejected instead of reaching
+ * `toISOString()` or SQLite. Valid integers are clamped to `[min, max]`.
+ */
+function integerParam(
+  raw: unknown,
+  name: string,
+  opts: { fallback: number; min: number; max: number },
+): number {
+  if (raw === undefined) return opts.fallback;
+  const text = typeof raw === "string" ? raw.trim() : "";
+  const value = Number(text);
+  if (!/^[+-]?\d+$/.test(text) || !Number.isSafeInteger(value)) {
+    throw new InvalidQueryParam(`${name} must be an integer`);
+  }
+  return Math.min(Math.max(value, opts.min), opts.max);
 }
 
 export function createApiServer(opts: ApiOptions): express.Express {
@@ -39,13 +64,13 @@ export function createApiServer(opts: ApiOptions): express.Express {
   });
 
   app.get("/api/claims/daily", (req, res) => {
-    const days = Math.min(Math.max(Number(req.query.days ?? 30), 1), 365);
+    const days = integerParam(req.query.days, "days", { fallback: 30, min: 1, max: 365 });
     res.json({ days, rows: db.daily(days) });
   });
 
   app.get("/api/events", (req, res) => {
-    const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 500);
-    const offset = Math.max(Number(req.query.offset ?? 0), 0);
+    const limit = integerParam(req.query.limit, "limit", { fallback: 50, min: 1, max: 500 });
+    const offset = integerParam(req.query.offset, "offset", { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
     const events = db.recentEvents(limit, offset);
     const total = db.recentEvents(Infinity, 0).length;
     res.json({ total, events });
@@ -60,6 +85,14 @@ export function createApiServer(opts: ApiOptions): express.Express {
       contracts: config.contracts,
       ...(opts.extraHealth ? opts.extraHealth() : {}),
     });
+  });
+
+  app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err instanceof InvalidQueryParam) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
   });
 
   return app;

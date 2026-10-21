@@ -178,4 +178,36 @@ describe("aggregate API", () => {
       last_error: "RPC unavailable",
     });
   });
+
+  it("rejects non-integer days/limit/offset with 400 instead of a server error (#660)", async () => {
+    const invalid = [
+      "/api/claims/daily?days=abc",
+      "/api/claims/daily?days=1.5",
+      "/api/claims/daily?days=NaN",
+      "/api/claims/daily?days=1e3",
+      "/api/claims/daily?days=",
+      "/api/events?limit=abc",
+      "/api/events?limit=2.5",
+      "/api/events?offset=Infinity",
+      "/api/events?offset=-1.5",
+    ];
+    for (const path of invalid) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status, path).toBe(400);
+      expect((await res.json()).error, path).toMatch(/must be an integer/);
+    }
+  });
+
+  it("still accepts whole-number pagination parameters and clamps their range (#660)", async () => {
+    seed();
+    const daily = await fetch(`${base}/api/claims/daily?days=7`).then((res) => res.json());
+    expect(daily.days).toBe(7);
+
+    const clamped = await fetch(`${base}/api/claims/daily?days=-5`).then((res) => res.json());
+    expect(clamped.days).toBe(1);
+
+    const events = await fetch(`${base}/api/events?limit=2&offset=-3`);
+    expect(events.status).toBe(200);
+    expect((await events.json()).events).toHaveLength(2);
+  });
 });

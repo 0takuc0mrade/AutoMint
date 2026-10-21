@@ -3157,6 +3157,172 @@ mod offers_and_fees {
         assert_eq!(h.token.balance(&buyer), PRICE);
     }
 
+    // ---- offer lifetime and dismissal (#914) ----
+
+    /// Fill every offer slot on a fresh seller-owned bot with
+    /// maximum-lifetime offers from distinct buyers.
+    fn fill_offer_slots(h: &Harness) -> (Address, u64, std::vec::Vec<(Address, u64)>) {
+        let seller = Address::generate(&h.env);
+        let bot_id = h.bot.mint_basic(&seller);
+        let mut offers = std::vec::Vec::new();
+        for _ in 0..MAX_OFFERS_PER_BOT {
+            let buyer = Address::generate(&h.env);
+            h.token.mint(&buyer, &40);
+            let id = h.mkt.make_offer(
+                &buyer,
+                &bot_id,
+                &40,
+                &h.token.address,
+                &(now(h) + MAX_OFFER_DURATION),
+            );
+            offers.push((buyer, id));
+        }
+        (seller, bot_id, offers)
+    }
+
+    #[test]
+    fn make_offer_rejects_expiry_beyond_max_duration() {
+        let h = setup();
+        let seller = Address::generate(&h.env);
+        let buyer = Address::generate(&h.env);
+        let bot_id = h.bot.mint_basic(&seller);
+        h.token.mint(&buyer, &PRICE);
+        assert_eq!(
+            h.mkt.try_make_offer(
+                &buyer,
+                &bot_id,
+                &PRICE,
+                &h.token.address,
+                &(now(&h) + MAX_OFFER_DURATION + 1)
+            ),
+            Err(Ok(MarketplaceError::InvalidExpiry))
+        );
+        assert_eq!(
+            h.mkt
+                .try_make_offer(&buyer, &bot_id, &PRICE, &h.token.address, &u64::MAX),
+            Err(Ok(MarketplaceError::InvalidExpiry))
+        );
+        assert_eq!(h.token.balance(&buyer), PRICE);
+        // Exactly the maximum lifetime is accepted.
+        let id = h.mkt.make_offer(
+            &buyer,
+            &bot_id,
+            &PRICE,
+            &h.token.address,
+            &(now(&h) + MAX_OFFER_DURATION),
+        );
+        assert_eq!(
+            h.mkt.get_offer(&id).expires_at,
+            now(&h) + MAX_OFFER_DURATION
+        );
+    }
+
+    #[test]
+    fn long_lived_offers_exhausting_the_cap_free_up_at_max_duration() {
+        let h = setup();
+        let (_seller, bot_id, offers) = fill_offer_slots(&h);
+        let late = Address::generate(&h.env);
+        h.token.mint(&late, &40);
+        assert_eq!(
+            h.mkt
+                .try_make_offer(&late, &bot_id, &40, &h.token.address, &(now(&h) + DAY)),
+            Err(Ok(MarketplaceError::TooManyOffers))
+        );
+        // Once the bounded lifetime passes, anyone can clear a slot.
+        advance(&h, MAX_OFFER_DURATION);
+        let keeper = Address::generate(&h.env);
+        let (buyer, id) = offers[0].clone();
+        h.mkt.cancel_offer(&keeper, &id);
+        assert_eq!(h.token.balance(&buyer), 40);
+        h.mkt
+            .make_offer(&late, &bot_id, &40, &h.token.address, &(now(&h) + DAY));
+        assert_eq!(h.mkt.get_offers_for_bot(&bot_id).len(), MAX_OFFERS_PER_BOT);
+    }
+
+    #[test]
+    fn seller_can_dismiss_offers_exhausting_the_cap() {
+        let h = setup();
+        let (seller, bot_id, offers) = fill_offer_slots(&h);
+        let (buyer, id) = offers[3].clone();
+        h.mkt.dismiss_offer(&seller, &id);
+        assert_eq!(last_event_topic(&h), symbol_short!("offer_dsm"));
+        // The refund always goes to the buyer, never the dismisser.
+        assert_eq!(h.token.balance(&buyer), 40);
+        assert_eq!(h.token.balance(&seller), 0);
+        assert_eq!(h.mkt.get_offer(&id).status, OfferStatus::Cancelled);
+        assert_eq!(
+            h.mkt.get_offers_for_bot(&bot_id).len(),
+            MAX_OFFERS_PER_BOT - 1
+        );
+        let late = Address::generate(&h.env);
+        h.token.mint(&late, &40);
+        h.mkt
+            .make_offer(&late, &bot_id, &40, &h.token.address, &(now(&h) + DAY));
+        assert_eq!(
+            h.mkt.try_dismiss_offer(&seller, &id),
+            Err(Ok(MarketplaceError::OfferNotActive))
+        );
+    }
+
+    #[test]
+    fn listing_seller_and_admin_can_dismiss_offers() {
+        let h = setup();
+        let (seller, buyer, bot_id, offer_id) = offer_setup(&h);
+        h.mkt
+            .list_bot(&seller, &bot_id, &PRICE, &h.token.address, &WEEK);
+        // The marketplace holds the bot; the listing seller still controls it.
+        h.mkt.dismiss_offer(&seller, &offer_id);
+        assert_eq!(h.token.balance(&buyer), PRICE);
+
+        let other = Address::generate(&h.env);
+        h.token.mint(&other, &PRICE);
+        let id = h
+            .mkt
+            .make_offer(&other, &bot_id, &PRICE, &h.token.address, &(now(&h) + DAY));
+        h.mkt.dismiss_offer(&h.admin, &id);
+        assert_eq!(h.token.balance(&other), PRICE);
+        assert_eq!(h.token.balance(&h.admin), 0);
+        assert_eq!(h.mkt.get_offers_for_bot(&bot_id).len(), 0);
+    }
+
+    #[test]
+    fn dismiss_offer_rejects_third_parties_and_requires_auth() {
+        let h = setup();
+        let (seller, buyer, _bot_id, offer_id) = offer_setup(&h);
+        let stranger = Address::generate(&h.env);
+        assert_eq!(
+            h.mkt.try_dismiss_offer(&stranger, &offer_id),
+            Err(Ok(MarketplaceError::Unauthorized))
+        );
+        // The buyer is not the bot owner; they use `cancel_offer` instead.
+        assert_eq!(
+            h.mkt.try_dismiss_offer(&buyer, &offer_id),
+            Err(Ok(MarketplaceError::Unauthorized))
+        );
+        assert_eq!(
+            h.mkt.try_dismiss_offer(&seller, &999),
+            Err(Ok(MarketplaceError::OfferNotFound))
+        );
+        assert_eq!(h.token.balance(&h.mkt.address), PRICE);
+        h.env.mock_auths(&[]);
+        assert!(h.mkt.try_dismiss_offer(&seller, &offer_id).is_err());
+        assert_eq!(h.mkt.get_offer(&offer_id).status, OfferStatus::Active);
+    }
+
+    #[test]
+    fn previous_owner_cannot_dismiss_after_transfer() {
+        let h = setup();
+        let (seller, buyer, bot_id, offer_id) = offer_setup(&h);
+        let new_owner = Address::generate(&h.env);
+        h.bot.transfer(&bot_id, &seller, &new_owner);
+        assert_eq!(
+            h.mkt.try_dismiss_offer(&seller, &offer_id),
+            Err(Ok(MarketplaceError::Unauthorized))
+        );
+        h.mkt.dismiss_offer(&new_owner, &offer_id);
+        assert_eq!(h.token.balance(&buyer), PRICE);
+    }
+
     // ---- fees (#426) ----
 
     #[test]

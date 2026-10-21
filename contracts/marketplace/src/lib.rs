@@ -330,7 +330,8 @@ pub enum MarketplaceError {
     Reentrancy = 22,          // #326: Reentrancy guard
     UnsupportedCurrency = 23, // #325: Currency allowlist
     ListingExpired = 24,      // #423: listing expiry
-    /// `make_offer`: `expires_at` is not in the future (#425).
+    /// `make_offer`: `expires_at` is not in the future (#425), or is more than
+    /// `MAX_OFFER_DURATION` seconds away (#914).
     InvalidExpiry = 25,
     OfferNotFound = 26,
     /// The offer was already accepted or cancelled (#425).
@@ -371,6 +372,9 @@ const LEDGER_THRESHOLD: u32 = 103680;
 /// index so `get_offers_for_bot` and offer bookkeeping stay O(1) in storage
 /// entries.
 pub const MAX_OFFERS_PER_BOT: u32 = 25;
+/// Longest an offer may stay open, in seconds (30 days) (#914). Bounds how
+/// long a buyer can hold one of a bot's `MAX_OFFERS_PER_BOT` slots.
+pub const MAX_OFFER_DURATION: u64 = 2_592_000;
 
 /// Entries per persistent user-history page (#916). Appends rewrite only the
 /// last page, so a long history never gets loaded and stored in full.
@@ -1588,7 +1592,8 @@ impl MarketplaceContract {
     /// The bot does not need to be listed. The offer is rejected when the
     /// buyer already owns the bot, outright or through their own active
     /// listing, when `currency` is not allowlisted, when `amount` is below the
-    /// currency's minimum price, or when the bot already carries
+    /// currency's minimum price, when `expires_at` is more than
+    /// `MAX_OFFER_DURATION` seconds away, or when the bot already carries
     /// `MAX_OFFERS_PER_BOT` open offers.
     pub fn make_offer(
         env: Env,
@@ -1628,7 +1633,8 @@ impl MarketplaceContract {
         if amount < Self::min_price_for_currency(env, &currency, config.fee_bps) {
             return Err(MarketplaceError::PriceTooLow);
         }
-        if expires_at <= env.ledger().timestamp() {
+        let now = env.ledger().timestamp();
+        if expires_at <= now || expires_at - now > MAX_OFFER_DURATION {
             return Err(MarketplaceError::InvalidExpiry);
         }
         let bot_client = BotNFTContractClient::new(env, &config.bot_nft);
@@ -1856,19 +1862,58 @@ impl MarketplaceContract {
         if !expired && caller != offer.buyer {
             return Err(MarketplaceError::NotOfferOwner);
         }
-        let token_client = token::Client::new(env, &offer.currency);
-        if token_client
-            .try_transfer(&env.current_contract_address(), &offer.buyer, &offer.amount)
-            .is_err()
-        {
-            return Err(MarketplaceError::PaymentFailed);
-        }
-        offer.status = OfferStatus::Cancelled;
-        Self::write_offer(env, &offer);
-        Self::remove_bot_offer(env, offer.bot_id, offer_id);
+        Self::refund_offer(env, &mut offer)?;
         env.events().publish(
             (symbol_short!("offer_cxl"), offer.buyer.clone(), offer_id),
             (offer.bot_id, offer.amount, expired),
+        );
+        Ok(())
+    }
+
+    /// Dismiss an open offer before expiry and refund its escrow in full to
+    /// the buyer (#914). `caller` must be the bot's effective owner (directly,
+    /// or as the seller of its active listing) or the admin, so a bot owner
+    /// can clear unwanted offers that would otherwise hold its
+    /// `MAX_OFFERS_PER_BOT` slots until they expire. The refund never goes
+    /// anywhere but the buyer.
+    pub fn dismiss_offer(env: Env, caller: Address, offer_id: u64) -> Result<(), MarketplaceError> {
+        Self::check_and_set_lock(&env)?;
+        let result = Self::dismiss_offer_inner(&env, caller, offer_id);
+        Self::clear_lock(&env);
+        result
+    }
+
+    fn dismiss_offer_inner(
+        env: &Env,
+        caller: Address,
+        offer_id: u64,
+    ) -> Result<(), MarketplaceError> {
+        caller.require_auth();
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        let mut offer = Self::read_offer(env, offer_id)?;
+        if offer.status != OfferStatus::Active {
+            return Err(MarketplaceError::OfferNotActive);
+        }
+        if caller != config.admin {
+            // A bot that no longer resolves has no owner to dismiss for it;
+            // the admin, or anyone after expiry, can still clear the offer.
+            let bot_client = BotNFTContractClient::new(env, &config.bot_nft);
+            let bot = match bot_client.try_get_bot(&offer.bot_id) {
+                Ok(Ok(b)) => b,
+                _ => return Err(MarketplaceError::Unauthorized),
+            };
+            if Self::effective_owner(env, &bot) != caller {
+                return Err(MarketplaceError::Unauthorized);
+            }
+        }
+        Self::refund_offer(env, &mut offer)?;
+        env.events().publish(
+            (symbol_short!("offer_dsm"), offer.buyer.clone(), offer_id),
+            (offer.bot_id, offer.amount, caller),
         );
         Ok(())
     }
@@ -1949,6 +1994,22 @@ impl MarketplaceContract {
     }
 
     // ---- offer and fee helpers ----
+
+    /// Return `offer`'s escrow to its buyer, mark it cancelled and drop it
+    /// from the bot's open-offer index.
+    fn refund_offer(env: &Env, offer: &mut Offer) -> Result<(), MarketplaceError> {
+        let token_client = token::Client::new(env, &offer.currency);
+        if token_client
+            .try_transfer(&env.current_contract_address(), &offer.buyer, &offer.amount)
+            .is_err()
+        {
+            return Err(MarketplaceError::PaymentFailed);
+        }
+        offer.status = OfferStatus::Cancelled;
+        Self::write_offer(env, offer);
+        Self::remove_bot_offer(env, offer.bot_id, offer.id);
+        Ok(())
+    }
 
     /// `amount * bps / 10_000`, or `Overflow`.
     ///

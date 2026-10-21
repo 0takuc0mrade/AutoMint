@@ -71,7 +71,9 @@ export function createApiServer(opts: ApiOptions): express.Express {
   app.get("/api/events", (req, res) => {
     const limit = integerParam(req.query.limit, "limit", { fallback: 50, min: 1, max: 500 });
     const offset = integerParam(req.query.offset, "offset", { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
-    res.json({ total: db.recentEvents(limit, offset).length, events: db.recentEvents(limit, offset) });
+    const events = db.recentEvents(limit, offset);
+    const total = db.recentEvents(Infinity, 0).length;
+    res.json({ total, events });
   });
 
   app.get("/api/health", (_req, res) => {

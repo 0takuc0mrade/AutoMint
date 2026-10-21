@@ -80,8 +80,10 @@ export function loadContractConfig(network = DEFAULT_NETWORK): LoadedConfig {
   if (fs.existsSync(manifestPath)) {
     try {
       manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-    } catch {
-      manifest = {};
+    } catch (err) {
+      throw new Error(
+        `Failed to parse deployment manifest at ${manifestPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 

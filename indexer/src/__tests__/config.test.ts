@@ -6,6 +6,7 @@ import {
   loadContractConfig,
   assertCompleteConfig,
   isContractAddress,
+  type LoadedConfig,
 } from "../config.js";
 import { CREG, CBOT, CACC, CMAR, CTOK } from "./helpers.js";
 
@@ -52,5 +53,44 @@ describe("loadContractConfig", () => {
     expect(isContractAddress("not-an-address")).toBe(false);
     expect(isContractAddress("C" + "A".repeat(54))).toBe(false); // 55 chars total
     expect(isContractAddress("C" + "A".repeat(55))).toBe(true); // 56 chars total
+  });
+
+  it("assertCompleteConfig rejects a malformed contract id and names the contract (#659)", () => {
+    const loaded: LoadedConfig = {
+      config: {
+        network: "testnet",
+        contracts: { registry: CREG, bot_nft: CBOT, accrual: "PLACEHOLDER", marketplace: CMAR, token: CTOK },
+      },
+      sources: {
+        registry: "env:AM_REGISTRY_CONTRACT_ID",
+        bot_nft: "env:AM_BOT_NFT_CONTRACT_ID",
+        accrual: "env:AM_ACCRUAL_CONTRACT_ID",
+        marketplace: "env:AM_MARKETPLACE_CONTRACT_ID",
+        token: "env:AM_TOKEN_CONTRACT_ID",
+      },
+      missing: [],
+    };
+
+    expect(() => assertCompleteConfig(loaded)).toThrow(/Invalid contract IDs for: accrual/);
+    expect(() => assertCompleteConfig(loaded)).toThrow(/AM_ACCRUAL_CONTRACT_ID/);
+  });
+
+  it("assertCompleteConfig accepts a config where every contract id is well formed (#659)", () => {
+    const loaded: LoadedConfig = {
+      config: {
+        network: "testnet",
+        contracts: { registry: CREG, bot_nft: CBOT, accrual: CACC, marketplace: CMAR, token: CTOK },
+      },
+      sources: {
+        registry: "manifest:x",
+        bot_nft: "manifest:x",
+        accrual: "manifest:x",
+        marketplace: "manifest:x",
+        token: "manifest:x",
+      },
+      missing: [],
+    };
+
+    expect(() => assertCompleteConfig(loaded)).not.toThrow();
   });
 });

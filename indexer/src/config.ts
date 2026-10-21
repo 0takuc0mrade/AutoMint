@@ -137,4 +137,22 @@ export function assertCompleteConfig(
         `AM_*_CONTRACT_ID env vars.`,
     );
   }
+
+  // Every resolved ID feeds the RPC `getEvents` filters, so a malformed or
+  // placeholder value must stop startup here rather than fail on every poll (#659).
+  const invalid = CONTRACT_NAMES.filter(
+    (name) => !isContractAddress(loaded.config.contracts[name]),
+  );
+  if (invalid.length > 0) {
+    const details = invalid
+      .map(
+        (name) =>
+          `${name} ("${loaded.config.contracts[name]}", from ${loaded.sources[name]})`,
+      )
+      .join(", ");
+    throw new Error(
+      `Invalid contract IDs for: ${details}. Each ID must be a Soroban ` +
+        `contract address (C followed by 55 base32 characters).`,
+    );
+  }
 }

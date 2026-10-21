@@ -328,7 +328,13 @@ impl AccrualContract {
         };
         let now = env.ledger().timestamp();
         let elapsed = now.saturating_sub(accrual.last_claim_ts);
-        let settled = elapsed.saturating_mul(accrual.rate) / 3600;
+        // Include the sub-hour remainder from earlier syncs, otherwise a
+        // sequence of short intervals never settles a point (#909).
+        let numerator = elapsed
+            .saturating_mul(accrual.rate)
+            .saturating_add(accrual.leftover);
+        let settled = numerator / 3600;
+        accrual.leftover = numerator % 3600;
         accrual.carry_points = accrual.carry_points.saturating_add(settled);
         accrual.lifetime_points = accrual.lifetime_points.saturating_add(settled);
         accrual.last_claim_ts = now;
@@ -744,7 +750,7 @@ impl AccrualContract {
 
     pub fn stop_accrual(env: Env, user: Address, registry: Address) -> Result<(), AccrualError> {
         user.require_auth();
-        let accrual: UserAccrual = env
+        let mut accrual: UserAccrual = env
             .storage()
             .persistent()
             .get(&DataKey::UserAccrual(user.clone()))
@@ -755,12 +761,26 @@ impl AccrualContract {
             .saturating_mul(accrual.rate)
             .saturating_add(accrual.leftover);
         let pending = total_numerator / 3600;
+        let leftover = total_numerator % 3600;
         if pending > 0 {
             RegistryClient::new(&env, &registry).add_points(&user, &pending);
         }
+        // Keep the record instead of deleting it so the carry (and the
+        // sub-hour remainder) stays claimable (#908). A rate of 0 pauses
+        // accrual until `start_accrual` re-syncs the rate.
+        accrual.carry_points = accrual.carry_points.saturating_add(pending);
+        accrual.lifetime_points = accrual.lifetime_points.saturating_add(pending);
+        accrual.last_claim_ts = current_ts;
+        accrual.leftover = leftover;
+        accrual.rate = 0;
         env.storage()
             .persistent()
-            .remove(&DataKey::UserAccrual(user.clone()));
+            .set(&DataKey::UserAccrual(user.clone()), &accrual);
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserAccrual(user.clone()),
+            LEDGER_THRESHOLD,
+            LEDGER_BUMP,
+        );
         env.events()
             .publish((symbol_short!("stopped"), user), pending);
         Ok(())
@@ -2133,5 +2153,46 @@ mod settle_tests {
         let (pending, carry, lifetime): (u64, u64, u64) =
             <(u64, u64, u64)>::try_from_val(&d.env, &data).unwrap();
         assert_eq!((pending, carry, lifetime), (2, 2, 2));
+    }
+
+    #[test]
+    fn sub_point_accrual_survives_repeated_rate_syncs() {
+        let d = deploy_all(Env::default());
+        let accrual = AccrualContractClient::new(&d.env, &d.accrual_id);
+        let user = accruing_user(&d, "syncfraction");
+        // Each half-hour is under one point; the first two together make one.
+        advance(&d.env, HOUR / 2);
+        assert_eq!(accrual.sync_rate(&user), 0);
+        advance(&d.env, HOUR / 2);
+        assert_eq!(accrual.sync_rate(&user), 1);
+        // Two more half-hours complete the next point, with no points lost.
+        advance(&d.env, HOUR / 2);
+        assert_eq!(accrual.sync_rate(&user), 0);
+        advance(&d.env, HOUR / 2);
+        assert_eq!(accrual.sync_rate(&user), 1);
+        let state = accrual.get_accrual_state(&user).unwrap();
+        assert_eq!(state.carry_points, 2);
+        assert_eq!(state.lifetime_points, 2);
+    }
+
+    #[test]
+    fn stop_keeps_carry_and_pending_rewards_claimable() {
+        let d = deploy_all(Env::default());
+        let accrual = AccrualContractClient::new(&d.env, &d.accrual_id);
+        let user = accruing_user(&d, "stopcarry");
+        // 80 points is under the 100-point mint threshold, so it all stays as carry.
+        advance(&d.env, 80 * HOUR);
+        accrual.stop_accrual(&user, &d.registry_id);
+        assert_eq!(points_of(&d, &user), 80);
+        let stopped = accrual.get_accrual_state(&user).unwrap();
+        assert_eq!(stopped.carry_points, 80);
+        assert_eq!(stopped.rate, 0);
+
+        // Resuming keeps the carry; 20 more points completes the next AMT.
+        accrual.start_accrual(&user);
+        advance(&d.env, 20 * HOUR);
+        assert_eq!(accrual.claim(&user, &d.token_id, &d.registry_id), 20);
+        assert_eq!(accrual.get_accrual_state(&user).unwrap().carry_points, 0);
+        assert_eq!(points_of(&d, &user), 100);
     }
 }

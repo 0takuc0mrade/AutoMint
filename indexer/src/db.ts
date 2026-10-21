@@ -85,13 +85,61 @@ CREATE TABLE IF NOT EXISTS aggregates (
 ${LISTINGS_SCHEMA}
 `;
 
+/**
+ * Statements on the per-event write path, compiled once per connection rather
+ * than once per event (#1237). Requires SCHEMA to exist; a later schema change
+ * (the listings migration) is handled by SQLite re-preparing on next step.
+ */
+function prepareWriteStatements(db: Database.Database) {
+  return {
+    insertEvent: db.prepare(
+      `INSERT OR IGNORE INTO events
+         (id, contract_id, contract, event, ledger, tx_hash, event_index,
+          ledger_closed_at, topics_json, data_json, recorded_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    insertListing: db.prepare(
+      `INSERT INTO listings
+         (listing_id, seller, bot_id, bot_tier, price, currency,
+          listed_at, listed_ledger, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
+       ON CONFLICT(listing_id) DO UPDATE SET
+         seller = excluded.seller,
+         bot_id = excluded.bot_id,
+         bot_tier = excluded.bot_tier,
+         price = excluded.price,
+         currency = excluded.currency,
+         listed_at = excluded.listed_at,
+         listed_ledger = excluded.listed_ledger,
+         status = 'active'`,
+    ),
+    closeListing: db.prepare(
+      `UPDATE listings SET status = ? WHERE listing_id = ?`,
+    ),
+    touchListing: db.prepare(
+      `INSERT OR IGNORE INTO listings (listing_id, status) VALUES (?, 'unknown')`,
+    ),
+    updateListingPrice: db.prepare(
+      `UPDATE listings SET price = ? WHERE listing_id = ? AND status = 'active'`,
+    ),
+    selectAggregate: db.prepare("SELECT value FROM aggregates WHERE key = ?"),
+    upsertAggregate: db.prepare(
+      `INSERT INTO aggregates (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ),
+  };
+}
+
 export class IndexerDb {
   private readonly db: Database.Database;
+  private readonly stmts: ReturnType<typeof prepareWriteStatements>;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    // Before the migrations below: they replay events through these statements.
+    this.stmts = prepareWriteStatements(this.db);
     this.migrateListingIdentifiers();
     this.initializeAggregates();
     this.migrateMarketplaceSchema();
@@ -127,53 +175,14 @@ export class IndexerDb {
 
   // ── Raw events (idempotent insert) ────────────────────────────────────────
 
-  private insertEventStmt() {
-    return this.db.prepare(
-      `INSERT OR IGNORE INTO events
-         (id, contract_id, contract, event, ledger, tx_hash, event_index,
-          ledger_closed_at, topics_json, data_json, recorded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-  }
-
-  private insertListingStmt() {
-    return this.db.prepare(
-      `INSERT INTO listings
-         (listing_id, seller, bot_id, bot_tier, price, currency,
-          listed_at, listed_ledger, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
-       ON CONFLICT(listing_id) DO UPDATE SET
-         seller = excluded.seller,
-         bot_id = excluded.bot_id,
-         bot_tier = excluded.bot_tier,
-         price = excluded.price,
-         currency = excluded.currency,
-         listed_at = excluded.listed_at,
-         listed_ledger = excluded.listed_ledger,
-         status = 'active'`,
-    );
-  }
-
-  private closeListingStmt() {
-    return this.db.prepare(
-      `UPDATE listings SET status = ? WHERE listing_id = ?`,
-    );
-  }
-
-  private touchListingStmt() {
-    return this.db.prepare(
-      `INSERT OR IGNORE INTO listings (listing_id, status) VALUES (?, 'unknown')`,
-    );
-  }
-
   /** Close a listing on a lifecycle event (`sold`, `cancel`, ...). */
   private closeListing(listingId: unknown, status: string): void {
     const id = toDecimal(listingId);
     // Ensure a row exists even if we never saw the original `listed` event
     // (e.g. indexing started mid-history): the floor-price query only looks
     // at status = 'active', so an unknown/absent listing cannot distort it.
-    this.touchListingStmt().run(id);
-    this.closeListingStmt().run(status, id);
+    this.stmts.touchListing.run(id);
+    this.stmts.closeListing.run(status, id);
   }
 
   /**
@@ -190,7 +199,7 @@ export class IndexerDb {
         // topics = [seller, listing_id]; data = [bot_id, price, currency]
         const [seller, listingId] = event.topics as [unknown, unknown];
         const [botId, price, currency] = data;
-        this.insertListingStmt().run(
+        this.stmts.insertListing.run(
           toDecimal(listingId),
           typeof seller === "string" ? seller : null,
           toDecimal(botId),
@@ -221,11 +230,10 @@ export class IndexerDb {
       case "price_upd":
         // topics = [seller, listing_id]; data = [old_price, new_price].
         // Only an active listing's price counts toward the floor.
-        this.db
-          .prepare(
-            `UPDATE listings SET price = ? WHERE listing_id = ? AND status = 'active'`,
-          )
-          .run(toDecimal(data[1]), toDecimal(event.topics[1]));
+        this.stmts.updateListingPrice.run(
+          toDecimal(data[1]),
+          toDecimal(event.topics[1]),
+        );
         break;
       default:
         break;
@@ -263,16 +271,11 @@ export class IndexerDb {
     } catch {
       return;
     }
-    const row = this.db
-      .prepare("SELECT value FROM aggregates WHERE key = ?")
-      .get(key) as { value: string } | undefined;
+    const row = this.stmts.selectAggregate.get(key) as
+      | { value: string }
+      | undefined;
     const current = row ? BigInt(row.value) : 0n;
-    this.db
-      .prepare(
-        `INSERT INTO aggregates (key, value) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      )
-      .run(key, (current + amount).toString());
+    this.stmts.upsertAggregate.run(key, (current + amount).toString());
   }
 
   /** One-time migration for databases created before exact totals existed. */
@@ -398,7 +401,7 @@ export class IndexerDb {
     let inserted = 0;
     const tx = this.db.transaction((evts: DecodedEvent[]) => {
       for (const ev of evts) {
-        const res = this.insertEventStmt().run(
+        const res = this.stmts.insertEvent.run(
           ev.id,
           ev.contractId,
           ev.contract,

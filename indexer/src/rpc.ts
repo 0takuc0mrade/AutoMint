@@ -147,41 +147,42 @@ export class SorobanRpcClient implements RpcClient {
       },
     ];
 
-    return withRetry(async () => {
-      const allEvents: RawRpcEvent[] = [];
-      let latestLedger = 0;
-      let cursor: string | undefined = initialCursor;
+    const allEvents: RawRpcEvent[] = [];
+    let latestLedger = 0;
+    let cursor: string | undefined = initialCursor;
 
-      do {
-        throwIfAborted(signal);
-        const request = cursor
-          ? { filters, cursor, limit }
-          : { filters, startLedger, limit };
+    // Retry each page on its own (#1231): a transient failure on page N
+    // re-requests page N with the same cursor, keeping pages 1..N-1.
+    do {
+      throwIfAborted(signal);
+      const request = cursor
+        ? { filters, cursor, limit }
+        : { filters, startLedger, limit };
 
-        const response = await this.server.getEvents(
-          request as rpc.Api.GetEventsRequest,
-        );
+      const response = await withRetry(
+        () => this.server.getEvents(request as rpc.Api.GetEventsRequest),
+        { signal },
+      );
 
-        latestLedger = Math.max(latestLedger, Number(response.latestLedger ?? 0));
+      latestLedger = Math.max(latestLedger, Number(response.latestLedger ?? 0));
 
-        for (const ev of response.events) {
-          allEvents.push({
-            id: ev.id,
-            contractId: ev.contractId?.toString() ?? "",
-            ledger: Number(ev.ledger),
-            ledgerClosedAt: ev.ledgerClosedAt ?? null,
-            txHash: ev.txHash,
-            eventIndex: parseEventIndex(ev.id),
-            topic: ev.topic,
-            value: ev.value,
-            inSuccessfulContractCall: ev.inSuccessfulContractCall,
-          });
-        }
-        cursor = response.cursor || undefined;
-      } while (cursor);
+      for (const ev of response.events) {
+        allEvents.push({
+          id: ev.id,
+          contractId: ev.contractId?.toString() ?? "",
+          ledger: Number(ev.ledger),
+          ledgerClosedAt: ev.ledgerClosedAt ?? null,
+          txHash: ev.txHash,
+          eventIndex: parseEventIndex(ev.id),
+          topic: ev.topic,
+          value: ev.value,
+          inSuccessfulContractCall: ev.inSuccessfulContractCall,
+        });
+      }
+      cursor = response.cursor || undefined;
+    } while (cursor);
 
-      return { events: allEvents, latestLedger };
-    }, { signal });
+    return { events: allEvents, latestLedger };
   }
 
   async getOldestLedger(signal?: AbortSignal): Promise<number> {

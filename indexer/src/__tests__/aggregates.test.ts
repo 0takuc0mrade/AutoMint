@@ -245,4 +245,26 @@ describe("IndexerDb aggregates", () => {
     insert(CTOK, [sym("mint"), addr(G1)], i128(5), 1);
     expect(db.sumAmtMinted()).toBe("5");
   });
+
+  it("summary and daily queries are index-backed, not full scans (#1245)", () => {
+    const plan = (sql: string, ...args: unknown[]) =>
+      (db.raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[])
+        .map((r) => r.detail)
+        .join("\n");
+
+    expect(
+      plan("SELECT COUNT(*) FROM events WHERE contract = ? AND event = ?", "accrual", "claim"),
+    ).toContain("idx_events_contract_event");
+    expect(
+      plan("SELECT 1 FROM events WHERE ledger_closed_at >= ? ORDER BY ledger_closed_at", "2026-01-01"),
+    ).toContain("idx_events_closed_at");
+  });
+
+  it("daily() buckets by UTC day with the range filter (#1245)", () => {
+    insert(CACC, [sym("claim"), addr(G1)], vec([u64(100), u64(1)]), 1);
+    const rows = db.daily(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].day).toBe(today().slice(0, 10));
+    expect(rows[0].claims).toBe(1);
+  });
 });

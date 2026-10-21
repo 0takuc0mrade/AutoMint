@@ -41,6 +41,21 @@ describe("loadContractConfig", () => {
     expect(loaded.sources.registry).toContain("manifest:");
   });
 
+  it("fails fast on a manifest that exists but is not valid JSON (#1232)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "am-config-"));
+    const manifest = path.join(dir, "testnet.json");
+    fs.writeFileSync(manifest, "{ not json");
+
+    const prev = process.env.AM_MANIFEST;
+    process.env.AM_MANIFEST = manifest;
+    try {
+      expect(() => loadContractConfig("testnet")).toThrow(/Failed to parse deployment manifest/);
+    } finally {
+      if (prev === undefined) delete process.env.AM_MANIFEST;
+      else process.env.AM_MANIFEST = prev;
+    }
+  });
+
   it("reports missing contracts and assertCompleteConfig throws", () => {
     const loaded = loadContractConfig("nonexistent-network-xyz");
     expect(loaded.missing.length).toBeGreaterThan(0);

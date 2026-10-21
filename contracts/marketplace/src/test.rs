@@ -3597,3 +3597,79 @@ mod offers_and_fees {
         assert_eq!(seen, expected);
     }
 }
+
+// #915: with the bot NFT wired to this marketplace, every escrow exit's
+// `bot_nft.transfer` calls back into `on_bot_moved`. The listing must still be
+// retired exactly once, so a seller with several listings keeps an accurate
+// count (and cannot slip past the listing cap).
+mod escrow_exit_counts {
+    use super::*;
+    use soroban_sdk::testutils::Ledger as _;
+
+    const PRICE: i128 = 50_0000000;
+
+    /// Seller with three escrowed listings and the bot NFT notifying the
+    /// marketplace. Returns (seller, [(listing_id, bot_id); 3]).
+    fn three_listings(h: &Harness) -> (Address, [(u64, u64); 3]) {
+        h.env.mock_all_auths();
+        h.bot.set_marketplace(&h.mkt.address);
+        let seller = Address::generate(&h.env);
+        let mut out = [(0, 0); 3];
+        for slot in out.iter_mut() {
+            let bot_id = h.bot.mint_basic(&seller);
+            let id = h
+                .mkt
+                .list_bot(&seller, &bot_id, &PRICE, &h.token.address, &604_800_u64);
+            *slot = (id, bot_id);
+        }
+        assert_eq!(h.mkt.get_user_active_listing_count(&seller), 3);
+        (seller, out)
+    }
+
+    fn assert_two_left(h: &Harness, seller: &Address, exited: u64) {
+        assert!(!h.mkt.get_listing(&exited).active);
+        assert_eq!(h.mkt.get_user_active_listing_count(seller), 2);
+    }
+
+    #[test]
+    fn buy_bot_decrements_once() {
+        let h = setup();
+        let (seller, l) = three_listings(&h);
+        let buyer = Address::generate(&h.env);
+        h.token.mint(&buyer, &PRICE);
+        h.mkt.buy_bot(&buyer, &l[0].0);
+        assert_two_left(&h, &seller, l[0].0);
+    }
+
+    #[test]
+    fn cancel_listing_decrements_once() {
+        let h = setup();
+        let (seller, l) = three_listings(&h);
+        h.mkt.cancel_listing(&seller, &l[0].0);
+        assert_two_left(&h, &seller, l[0].0);
+    }
+
+    #[test]
+    fn reclaim_expired_decrements_once() {
+        let h = setup();
+        let (seller, l) = three_listings(&h);
+        let expires_at = h.mkt.get_listing(&l[0].0).expires_at;
+        h.env.ledger().with_mut(|li| li.timestamp = expires_at + 1);
+        h.mkt.reclaim_expired(&l[0].0);
+        assert_two_left(&h, &seller, l[0].0);
+    }
+
+    #[test]
+    fn accept_offer_decrements_once() {
+        let h = setup();
+        let (seller, l) = three_listings(&h);
+        let buyer = Address::generate(&h.env);
+        h.token.mint(&buyer, &PRICE);
+        let expires = h.env.ledger().timestamp() + 86_400;
+        let offer_id = h
+            .mkt
+            .make_offer(&buyer, &l[0].1, &PRICE, &h.token.address, &expires);
+        h.mkt.accept_offer(&seller, &offer_id);
+        assert_two_left(&h, &seller, l[0].0);
+    }
+}

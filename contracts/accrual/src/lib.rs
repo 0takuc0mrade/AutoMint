@@ -2195,4 +2195,27 @@ mod settle_tests {
         assert_eq!(accrual.get_accrual_state(&user).unwrap().carry_points, 0);
         assert_eq!(points_of(&d, &user), 100);
     }
+
+    /// #905: the claim reentrancy guard lives in shared temporary storage, so
+    /// it must be cleared on exit or every later claim (any user) returns 0.
+    #[test]
+    fn claim_guard_is_cleared_between_consecutive_claims() {
+        let d = deploy_all(Env::default());
+        let accrual = AccrualContractClient::new(&d.env, &d.accrual_id);
+        let alice = accruing_user(&d, "alice");
+        let bob = accruing_user(&d, "bob");
+
+        advance(&d.env, 10 * HOUR);
+        assert_eq!(accrual.claim(&alice, &d.token_id, &d.registry_id), 10);
+        assert_eq!(accrual.claim(&bob, &d.token_id, &d.registry_id), 10);
+        assert!(!d.env.as_contract(&d.accrual_id, || d
+            .env
+            .storage()
+            .temporary()
+            .has(&DataKey::ReentrancyGuard)));
+
+        advance(&d.env, 5 * HOUR);
+        assert_eq!(accrual.claim(&alice, &d.token_id, &d.registry_id), 5);
+        assert_eq!(accrual.claim(&bob, &d.token_id, &d.registry_id), 5);
+    }
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   loadContractConfig,
   assertCompleteConfig,
@@ -39,6 +40,25 @@ describe("loadContractConfig", () => {
     expect(loaded.config.contracts.token).toBe(CTOK);
     expect(loaded.config.gitSha).toBe("abc123");
     expect(loaded.sources.registry).toContain("manifest:");
+  });
+
+  it("finds the default manifest under the repo root (#1234)", () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+    const dir = path.join(repoRoot, "deployments");
+    const network = `am-config-test-${process.pid}`;
+    const manifest = path.join(dir, `${network}.json`);
+    const createdDir = fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(manifest, JSON.stringify({ contracts: { registry: { contract_id: CREG } } }));
+    const prev = process.env.AM_MANIFEST;
+    delete process.env.AM_MANIFEST;
+    try {
+      const loaded = loadContractConfig(network);
+      expect(loaded.config.contracts.registry).toBe(CREG);
+      expect(loaded.sources.registry).toBe(`manifest:${manifest}`);
+    } finally {
+      if (prev !== undefined) process.env.AM_MANIFEST = prev;
+      fs.rmSync(createdDir ?? manifest, { recursive: true, force: true });
+    }
   });
 
   it("reports missing contracts and assertCompleteConfig throws", () => {

@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { isTransientError } from "../rpc.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { rpc } from "@stellar/stellar-sdk";
+import { isTransientError, SorobanRpcClient } from "../rpc.js";
 
 /** An axios-style HTTP error: the status lives on `response.status`. */
 function httpError(status: number): Error {
@@ -35,5 +36,40 @@ describe("isTransientError (#1229)", () => {
   it("retries network failures without an HTTP response", () => {
     expect(isTransientError(new Error("connect ECONNREFUSED 127.0.0.1:8000"))).toBe(true);
     expect(isTransientError(new Error("timeout of 30000ms exceeded"))).toBe(true);
+  });
+});
+
+describe("SorobanRpcClient.getEvents pagination retry (#1231)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** One `getEvents` page holding a single event with the given paging id. */
+  function page(id: string, cursor: string) {
+    return {
+      events: [{ id, ledger: 10, txHash: "tx", topic: [], inSuccessfulContractCall: true }],
+      cursor,
+      latestLedger: 20,
+    } as unknown as rpc.Api.GetEventsResponse;
+  }
+
+  it("retries only the failed page and keeps earlier pages and the cursor", async () => {
+    const getEvents = vi
+      .spyOn(rpc.Server.prototype, "getEvents")
+      .mockResolvedValueOnce(page("0000000042949672960-0000000001", "c1"))
+      .mockRejectedValueOnce(httpError(503))
+      .mockResolvedValueOnce(page("0000000042949672960-0000000002", ""));
+
+    const result = await new SorobanRpcClient("https://rpc.invalid").getEvents({
+      startLedger: 5,
+      contractIds: ["C1"],
+    });
+
+    expect(getEvents).toHaveBeenCalledTimes(3);
+    expect(getEvents.mock.calls[0][0]).toMatchObject({ startLedger: 5 });
+    for (const [request] of getEvents.mock.calls.slice(1)) {
+      expect(request).toMatchObject({ cursor: "c1" });
+      expect(request).not.toHaveProperty("startLedger");
+    }
+    expect(result.events.map((e) => e.eventIndex)).toEqual([1, 2]);
+    expect(result.latestLedger).toBe(20);
   });
 });

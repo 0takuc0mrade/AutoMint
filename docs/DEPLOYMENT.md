@@ -21,7 +21,7 @@ All environment variables used by the frontend are prefixed with `NEXT_PUBLIC_` 
 | `NEXT_PUBLIC_HORIZON_URL` | Yes | `https://horizon-testnet.stellar.org` | Horizon RPC URL for account balance queries. |
 | `NEXT_PUBLIC_TX_TIMEOUT` | No | `30` | Transaction submission timeout (in seconds). |
 | `NEXT_PUBLIC_BASE_FEE` | No | `100` | Base fee in stroops for transactions. |
-| `NEXT_PUBLIC_POINTS_PER_AMT` | No | `1000` | Points required per 1 `$AMT` token minted. |
+| `NEXT_PUBLIC_POINTS_PER_AMT` | No | `100` | Points required per 1 `$AMT` token minted. |
 | `NEXT_PUBLIC_LEADERBOARD_LIMIT` | No | `50` | Default record limit for leaderboard queries. |
 
 ---

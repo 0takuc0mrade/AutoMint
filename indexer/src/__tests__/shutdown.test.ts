@@ -14,7 +14,7 @@ import {
   toRawRpcEvent,
 } from "./helpers.js";
 
-describe("Poller shutdown (#662)", () => {
+describe("Poller shutdown (#662, #1240)", () => {
   it("abandons an in-flight cycle on abort without writing or recording a failure", async () => {
     const db = new IndexerDb(":memory:");
     const controller = new AbortController();

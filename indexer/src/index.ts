@@ -135,7 +135,7 @@ export async function main(): Promise<void> {
 
   // A signal only aborts the poller. `poller.run` settles once its in-flight
   // cycle has stopped, then the HTTP server drains and the database is closed
-  // exactly once (#662). A second signal falls through to the default handler.
+  // exactly once (#662, #1240). A second signal falls through to the default handler.
   const controller = new AbortController();
   const shutdown = () => controller.abort();
   process.once("SIGINT", shutdown);
@@ -176,8 +176,12 @@ function closeServer(server: Server): Promise<void> {
 const isEntry =
   process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
-  main().catch((error) => {
-    console.error("[indexer] fatal:", error);
-    process.exit(1);
-  });
+  main()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error("[indexer] fatal:", error);
+      process.exit(1);
+    });
 }

@@ -18,6 +18,7 @@
  *   AM_MANIFEST                explicit path to the deployment manifest
  */
 import fs from "node:fs";
+import type { Server } from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { IndexerDb } from "./db.js";
@@ -132,14 +133,11 @@ export async function main(): Promise<void> {
   const port = validatePositiveInt(process.env.AM_PORT, "AM_PORT", DEFAULT_PORT);
   const intervalMs = validatePositiveInt(process.env.AM_POLL_INTERVAL_MS, "AM_POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL_MS);
 
+  // A signal only aborts the poller. `poller.run` settles once its in-flight
+  // cycle has stopped, then the HTTP server drains and the database is closed
+  // exactly once (#662). A second signal falls through to the default handler.
   const controller = new AbortController();
-  const shutdown = () => {
-    controller.abort();
-    setTimeout(() => {
-      db.close();
-      process.exit(0);
-    }, 300);
-  };
+  const shutdown = () => controller.abort();
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
@@ -158,9 +156,17 @@ export async function main(): Promise<void> {
   try {
     await poller.run(intervalMs, controller.signal);
   } finally {
-    server.close();
+    await closeServer(server);
     db.close();
   }
+}
+
+/** Stop accepting connections and resolve once open ones have finished. */
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve) => {
+    server.close(() => resolve());
+    server.closeIdleConnections();
+  });
 }
 
 // ── Bootstrap ───────────────────────────────────────────────────────────────

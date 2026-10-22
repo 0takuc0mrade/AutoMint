@@ -11,6 +11,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CONTRACT_NAMES, type ContractConfig, type ContractName } from "./types.js";
 
 export const DEFAULT_NETWORK = process.env.AM_NETWORK ?? "testnet";
@@ -24,8 +25,9 @@ export const CONTRACT_ENV_VARS: Record<ContractName, string[]> = {
 };
 
 function repoRoot(): string {
-  // indexer/src/config.ts → indexer → repo root (works for dist/config.js too)
-  return path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
+  // indexer/src/config.ts → indexer → repo root (works for dist/config.js too).
+  // fileURLToPath decodes %20 and yields a native C:\ path on Windows (#1234).
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 
 /** Normalize a raw contract address (trim, uppercase C/G prefix). */
@@ -141,7 +143,7 @@ export function assertCompleteConfig(
   }
 
   // Every resolved ID feeds the RPC `getEvents` filters, so a malformed or
-  // placeholder value must stop startup here rather than fail on every poll (#659).
+  // placeholder value must stop startup here rather than fail on every poll (#659, #1230).
   const invalid = CONTRACT_NAMES.filter(
     (name) => !isContractAddress(loaded.config.contracts[name]),
   );

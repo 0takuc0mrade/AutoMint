@@ -4,8 +4,8 @@
 #
 # For each contract recorded in `deployments/<network>.json`, this script:
 #   1. checks out the manifest's `git_sha` into a throwaway git worktree,
-#   2. builds that contract's wasm with the pinned toolchain (rust-toolchain.toml)
-#      TWICE, in two separate Cargo target directories, and
+#   2. runs the same `stellar contract build` command used by deploy.sh TWICE,
+#      in two separate target directories, and
 #   3. asserts BOTH rebuilt sha256 hashes equal the `wasm_hash` recorded in the
 #      manifest (and therefore equal each other).
 #
@@ -32,11 +32,13 @@ NETWORK="testnet"
 CLEAN=true
 TOOLCHAIN=""
 CONTRACTS=()
-declare -A WANT_CONTRACT=()
+# Indexed array, not `declare -A`: bash 3.2 (stock macOS) has no associative
+# arrays (#1251).
+WANT_CONTRACTS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --network)   NETWORK="$2";    shift 2 ;;
-    --contract)  WANT_CONTRACT["$2"]=1; shift 2 ;;
+    --contract)  WANT_CONTRACTS+=("$2"); shift 2 ;;
     --toolchain) TOOLCHAIN="$2";   shift 2 ;;
     --no-clean)  CLEAN=false;      shift   ;;
     --help|-h)   sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -46,21 +48,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 MANIFEST="deployments/$NETWORK.json"
-GIT_SHA="$(jq -r '.git_sha // empty' "$MANIFEST" 2>/dev/null || true)"
+[[ -f "$MANIFEST" ]] || { echo "ERROR: no manifest $MANIFEST" >&2; exit 1; }
 
+GIT_SHA="$(jq -r '.git_sha // empty' "$MANIFEST" 2>/dev/null || true)"
 if [[ -z "$GIT_SHA" || "$GIT_SHA" == "null" ]]; then
   echo "ERROR: manifest $MANIFEST is missing a git_sha. Run ./scripts/deploy.sh $NETWORK first." >&2
   exit 1
 fi
-[[ -f "$MANIFEST" ]] || { echo "ERROR: no manifest $MANIFEST" >&2; exit 1; }
 
-if [[ -n "$TOOLCHAIN" ]]; then
-  CARGO=(cargo "+$TOOLCHAIN")
-else
-  CARGO=(cargo)
-fi
-
-WASM_TARGET="wasm32-unknown-unknown"
 ALL_CONTRACTS=(registry bot_nft accrual marketplace token)
 
 pkg_and_wasm() {  # <name> -> echoes "<pkg> <wasm-file>"
@@ -74,21 +69,51 @@ pkg_and_wasm() {  # <name> -> echoes "<pkg> <wasm-file>"
   esac
 }
 
+is_wanted() {  # <name> -> success when no --contract filter was given or it names <name>
+  # Guard the length first: under `set -u`, bash < 4.4 treats expanding an
+  # empty array as an unbound variable.
+  [[ ${#WANT_CONTRACTS[@]} -eq 0 ]] && return 0
+  local want
+  for want in "${WANT_CONTRACTS[@]}"; do
+    [[ "$want" == "$1" ]] && return 0
+  done
+  return 1
+}
+
 sha_of() { sha256sum "$1" | awk '{print $1}'; }
 
-build_in() {  # <worktree-dir> <target-dir> <pkg> -> builds wasm
-  ( cd "$1" && CARGO_TARGET_DIR="$2" "${CARGO[@]}" build -p "$3" \
-      --target "$WASM_TARGET" --release --locked )
+wasm_target_for() {  # <wasm-path> -> prints the Rust target directory, if known
+  local path="$1"
+  if [[ "$path" =~ (^|/)target/([^/]+)/release/ ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
+  fi
+}
+
+build_in() {  # <worktree-dir> <target-dir> -> builds wasm using deploy.sh's command
+  if [[ -n "$TOOLCHAIN" ]]; then
+    ( cd "$1" && RUSTUP_TOOLCHAIN="$TOOLCHAIN" CARGO_TARGET_DIR="$2" stellar contract build )
+  else
+    ( cd "$1" && CARGO_TARGET_DIR="$2" stellar contract build )
+  fi
 }
 
 verify_one() {
   local name="$1" pkg wname
   read -r pkg wname <<<"$(pkg_and_wasm "$name")"
 
-  local rec_hash
+  local rec_hash wasm_target wasm_path
   rec_hash="$(jq -r --arg c "$name" '.contracts[$c].wasm_hash // empty' "$MANIFEST")"
   if [[ -z "$rec_hash" ]]; then
     echo "  $name: manifest has no wasm_hash (not deployed?) — SKIP"
+    return 0
+  fi
+  wasm_target="$(jq -r --arg c "$name" '.contracts[$c].wasm_target // empty' "$MANIFEST")"
+  if [[ -z "$wasm_target" ]]; then
+    wasm_path="$(jq -r --arg c "$name" '.contracts[$c].wasm_path // empty' "$MANIFEST")"
+    wasm_target="$(wasm_target_for "$wasm_path")"
+  fi
+  if [[ -z "$wasm_target" || ! "$wasm_target" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    echo "  $name: manifest has no usable wasm_target or target-bearing wasm_path — FAIL" >&2
     return 1
   fi
 
@@ -113,12 +138,12 @@ verify_one() {
     echo "  (copied rust-toolchain.toml into the $short worktree)"
   fi
 
-  echo "  $name ($pkg @ $short): building (x2) ..."
-  build_in "$wdir" "$dir_a" "$pkg" >"/tmp/vb1_${name}.log" 2>&1
-  build_in "$wdir" "$dir_b" "$pkg" >"/tmp/vb2_${name}.log" 2>&1
+  echo "  $name ($pkg @ $short, target $wasm_target): building (x2) ..."
+  build_in "$wdir" "$dir_a" >"/tmp/vb1_${name}.log" 2>&1
+  build_in "$wdir" "$dir_b" >"/tmp/vb2_${name}.log" 2>&1
 
-  local wasm_a="$dir_a/$WASM_TARGET/release/$wname"
-  local wasm_b="$dir_b/$WASM_TARGET/release/$wname"
+  local wasm_a="$dir_a/$wasm_target/release/$wname"
+  local wasm_b="$dir_b/$wasm_target/release/$wname"
   local hash_a hash_b
   hash_a="$(sha_of "$wasm_a")"
   hash_b="$(sha_of "$wasm_b")"
@@ -144,9 +169,7 @@ echo "toolchain: ${TOOLCHAIN:-<rust-toolchain.toml>}"
 
 failures=0
 for name in "${ALL_CONTRACTS[@]}"; do
-  if [[ ${#WANT_CONTRACT[@]} -gt 0 && -z "${WANT_CONTRACT[$name]+x}" ]]; then
-    continue
-  fi
+  is_wanted "$name" || continue
   if ! verify_one "$name"; then
     failures=$((failures + 1))
   fi

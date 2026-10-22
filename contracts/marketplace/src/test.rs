@@ -11,7 +11,10 @@ use automint_bot_nft::{BotNFTContractClient, BotTier};
 use automint_registry::RegistryContractClient;
 use automint_testutils::{deploy_all, deploy_bot_nft_with_registry, register_user};
 use automint_token::AMTTokenClient;
-use soroban_sdk::{testutils::Address as _, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Env, TryFromVal,
+};
 extern crate std;
 
 // Tier supply is capped at 50 per tier, so bulk-listing tests spread bots

@@ -2,7 +2,6 @@
 set -euo pipefail
 
 # Generate typed TypeScript bindings for all five contracts via stellar CLI.
-# WASM must exist (cargo build --target wasm32v1-none --release -p ...).
 # Output is committed so CI can fail on drift.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,22 +9,26 @@ WASM_DIR="$ROOT_DIR/target/wasm32v1-none/release"
 OUT_BASE="$ROOT_DIR/frontend/src/lib/bindings"
 PLACEHOLDER_CONTRACT_ID="CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
 
-# Build WASM if not present
-if [[ ! -f "$WASM_DIR/automint_registry.wasm" ]]; then
-  echo "WASM not found, building contracts..."
-  cargo build --target wasm32v1-none --release -p automint-registry -p automint-token -p automint-bot-nft -p automint-accrual -p automint-marketplace
-fi
+# Always build: cargo is incremental, so unchanged contracts are a no-op, and
+# bindings can never be generated from a stale wasm (#1256).
+echo "Building contracts..."
+cargo build --target wasm32v1-none --release -p automint-registry -p automint-token -p automint-bot-nft -p automint-accrual -p automint-marketplace
 
-declare -A CONTRACTS=(
-  ["registry"]="automint_registry.wasm"
-  ["token"]="automint_token.wasm"
-  ["bot_nft"]="automint_bot_nft.wasm"
-  ["accrual"]="automint_accrual.wasm"
-  ["marketplace"]="automint_marketplace.wasm"
-)
+# A case function instead of `declare -A`, which needs bash 4+ and fails on
+# macOS's stock bash 3.2 (#1251).
+wasm_for() {  # <contract-name> -> wasm filename
+  case "$1" in
+    registry)    echo "automint_registry.wasm"    ;;
+    token)       echo "automint_token.wasm"       ;;
+    bot_nft)     echo "automint_bot_nft.wasm"     ;;
+    accrual)     echo "automint_accrual.wasm"     ;;
+    marketplace) echo "automint_marketplace.wasm" ;;
+    *) echo "generate-bindings.sh: unknown contract: $1" >&2; exit 2 ;;
+  esac
+}
 
-for name in "${!CONTRACTS[@]}"; do
-  wasm="$WASM_DIR/${CONTRACTS[$name]}"
+for name in registry token bot_nft accrual marketplace; do
+  wasm="$WASM_DIR/$(wasm_for "$name")"
   out="$OUT_BASE/$name"
   if [[ ! -f "$wasm" ]]; then
     echo "Missing WASM: $wasm" >&2

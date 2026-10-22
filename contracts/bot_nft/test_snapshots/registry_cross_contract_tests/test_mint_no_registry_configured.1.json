@@ -346,6 +346,18 @@
                         "val": {
                           "u64": 2
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "RegistryFailCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 1
+                        }
                       }
                     ]
                   }

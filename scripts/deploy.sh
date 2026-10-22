@@ -25,7 +25,7 @@
 #   --dry-run       Print every action that would be taken and exit 0 WITHOUT
 #                   deploying, invoking, building, or writing anything.
 #   --wasm-dir DIR  Directory holding the built contract wasm
-#                   (default: target/wasm32-unknown-unknown/release)
+#                   (default: target/wasm32v1-none/release)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,7 +36,8 @@ NETWORK="testnet"
 IDENTITY="mykey"
 FORCE=false
 DRY_RUN=false
-WASM_DIR="target/wasm32-unknown-unknown/release"
+WASM_DIR="target/wasm32v1-none/release"
+RUST_TOOLCHAIN=""
 
 # ── Argument parsing (flags, with legacy positional network/identity fallback)
 POSITIONAL=()
@@ -84,6 +85,13 @@ resolve_wasm() {  # <base-name-without-extension> -> prints wasm path
   fi
 }
 
+wasm_target_for() {  # <wasm-path> -> prints the Rust target directory, if known
+  local path="$1"
+  if [[ "$path" =~ (^|/)target/([^/]+)/release/ ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
+  fi
+}
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 log()  { printf '\n[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 ts()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -114,8 +122,8 @@ manifest_set_json() {  # <contract> <field> <json>
 manifest_touch_meta() {  # refresh git_sha + network + updated_at on the manifest
   manifest_exists || return 0
   local tmp; tmp="$(mktemp)"
-  jq --arg net "$NETWORK" --arg sha "$GIT_SHA" --arg t "$(ts)" \
-    '.network=$net | .git_sha=$sha | .updated_at=$t' "$MANIFEST" > "$tmp"
+  jq --arg net "$NETWORK" --arg sha "$GIT_SHA" --arg tc "$RUST_TOOLCHAIN" --arg t "$(ts)" \
+    '.network=$net | .git_sha=$sha | .toolchain=$tc | .updated_at=$t' "$MANIFEST" > "$tmp"
   mv "$tmp" "$MANIFEST"
 }
 
@@ -123,8 +131,8 @@ init_manifest() {
   $DRY_RUN && return 0   # never create/rewrite files in dry-run mode
   if ! manifest_exists; then
     mkdir -p "$MANIFEST_DIR"
-    jq -n --arg net "$NETWORK" --arg sha "$GIT_SHA" --arg t "$(ts)" \
-      '{network:$net, git_sha:$sha, toolchain:"1.95.0",
+    jq -n --arg net "$NETWORK" --arg sha "$GIT_SHA" --arg tc "$RUST_TOOLCHAIN" --arg t "$(ts)" \
+      '{network:$net, git_sha:$sha, toolchain:$tc,
         created_at:$t, updated_at:$t, contracts:{}}' > "$MANIFEST"
     log "Created manifest $MANIFEST"
   fi
@@ -180,7 +188,7 @@ resolve_id() {  # <contract-name>
 # ── Per-contract deploy + initialize ─────────────────────────────────────────
 deploy_contract() {  # <name>
   local name="$1"
-  local wname wname_base wasm_path existing_id
+  local wname wname_base wasm_path wasm_target existing_id
   wname="$(wasm_for "$name")"
   wname_base="${wname%.wasm}"
   wasm_path="$WASM_DIR/$wname"
@@ -208,6 +216,7 @@ deploy_contract() {  # <name>
       exit 1
     fi
   fi
+  wasm_target="$(wasm_target_for "$wasm_path")"
 
   log "Deploying $name ..."
   local raw id
@@ -222,6 +231,7 @@ deploy_contract() {  # <name>
   # Record IMMEDIATELY so a crash after this point can never lose the id.
   manifest_set "$name" contract_id  "$id"
   manifest_set "$name" wasm_path    "$wasm_path"
+  manifest_set "$name" wasm_target  "$wasm_target"
   manifest_set "$name" wasm_hash    "$(wasm_sha256 "$wasm_path")"
   manifest_set "$name" git_sha      "$GIT_SHA"
   manifest_set "$name" deployed_at   "$(ts)"
@@ -386,6 +396,17 @@ if $DRY_RUN; then
 else
   log "Building all contracts ..."
   stellar contract build
+  if ! rustc_version="$(rustc --version)"; then
+    echo "ERROR: could not determine the Rust toolchain version with 'rustc --version'." >&2
+    exit 1
+  fi
+  RUST_TOOLCHAIN="${rustc_version#rustc }"
+  RUST_TOOLCHAIN="${RUST_TOOLCHAIN%% *}"
+  if [[ -z "$RUST_TOOLCHAIN" ]]; then
+    echo "ERROR: could not determine the Rust toolchain version." >&2
+    exit 1
+  fi
+  log "Rust toolchain: $RUST_TOOLCHAIN"
 fi
 
 # 2. Resolve the administrative address for the deploying identity.
@@ -419,7 +440,8 @@ verify_contract bot_nft
 
 deploy_contract accrual
 init_contract accrual initialize --admin "$ADMIN_ADDRESS" \
-  --bot_nft "$(resolve_id bot_nft)" --registry "$(resolve_id registry)" --points_per_amt 100
+  --bot_nft "$(resolve_id bot_nft)" --registry "$(resolve_id registry)" \
+  --token "$(resolve_id token)" --points_per_amt 100
 verify_contract accrual
 
 deploy_contract marketplace

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   loadContractConfig,
   assertCompleteConfig,
@@ -56,6 +57,25 @@ describe("loadContractConfig", () => {
     }
   });
 
+  it("finds the default manifest under the repo root (#1234)", () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+    const dir = path.join(repoRoot, "deployments");
+    const network = `am-config-test-${process.pid}`;
+    const manifest = path.join(dir, `${network}.json`);
+    const createdDir = fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(manifest, JSON.stringify({ contracts: { registry: { contract_id: CREG } } }));
+    const prev = process.env.AM_MANIFEST;
+    delete process.env.AM_MANIFEST;
+    try {
+      const loaded = loadContractConfig(network);
+      expect(loaded.config.contracts.registry).toBe(CREG);
+      expect(loaded.sources.registry).toBe(`manifest:${manifest}`);
+    } finally {
+      if (prev !== undefined) process.env.AM_MANIFEST = prev;
+      fs.rmSync(createdDir ?? manifest, { recursive: true, force: true });
+    }
+  });
+
   it("reports missing contracts and assertCompleteConfig throws", () => {
     const loaded = loadContractConfig("nonexistent-network-xyz");
     expect(loaded.missing.length).toBeGreaterThan(0);
@@ -70,7 +90,7 @@ describe("loadContractConfig", () => {
     expect(isContractAddress("C" + "A".repeat(55))).toBe(true); // 56 chars total
   });
 
-  it("assertCompleteConfig rejects a malformed contract id and names the contract (#659)", () => {
+  it("assertCompleteConfig rejects a malformed contract id and names the contract (#659, #1230)", () => {
     const loaded: LoadedConfig = {
       config: {
         network: "testnet",
@@ -90,7 +110,7 @@ describe("loadContractConfig", () => {
     expect(() => assertCompleteConfig(loaded)).toThrow(/AM_ACCRUAL_CONTRACT_ID/);
   });
 
-  it("assertCompleteConfig accepts a config where every contract id is well formed (#659)", () => {
+  it("assertCompleteConfig accepts a config where every contract id is well formed (#659, #1230)", () => {
     const loaded: LoadedConfig = {
       config: {
         network: "testnet",

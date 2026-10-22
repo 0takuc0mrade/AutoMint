@@ -113,7 +113,7 @@ export class Poller {
     });
 
     // Shutdown arrived mid-cycle: drop the fetched batch so the checkpoint
-    // stays put and the next start re-fetches it (#662).
+    // stays put and the next start re-fetches it (#662, #1240).
     if (signal?.aborted) throw new Error("poll aborted by shutdown");
 
     const decoder = makeDecoder(this.config);
@@ -205,7 +205,7 @@ export class Poller {
    *
    * Abort is cooperative: an in-flight cycle is abandoned before it writes,
    * and the returned promise settles only once no poll is still running, so
-   * the caller may close the database as soon as `run` resolves (#662).
+   * the caller may close the database as soon as `run` resolves (#662, #1240).
    */
   async run(intervalMs: number, signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {

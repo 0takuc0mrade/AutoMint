@@ -5,6 +5,7 @@ import {
   scValToNative,
   xdr,
   nativeToScVal,
+  type Transaction,
 } from "@stellar/stellar-sdk";
 import {
   isConnected as freighterIsConnected,
@@ -435,14 +436,28 @@ export async function buildPreparedTx(
 
   const prepared = await rpcCall((server) => server.prepareTransaction(tx));
 
-  // Apply fee multiplier to assembled resource fee for surge buffer
-  if (FEE_MULTIPLIER !== 1.0) {
-    const baseFeeNum = parseInt(prepared.fee, 10);
-    const multipliedFee = Math.ceil(baseFeeNum * FEE_MULTIPLIER).toString();
-    prepared.fee = multipliedFee;
-  }
+  return applyFeeMultiplier(prepared, FEE_MULTIPLIER).toXDR();
+}
 
-  return prepared.toXDR();
+/**
+ * Return `tx` with its total fee scaled by `multiplier` (rounded up) as a
+ * surge buffer; a multiplier of 1 returns `tx` unchanged.
+ *
+ * A built `Transaction` is immutable — assigning `tx.fee` throws
+ * "Transaction is immutable" — so the transaction is rebuilt through
+ * `TransactionBuilder.cloneFrom`, which keeps the source, sequence number,
+ * time bounds and operations (#1286). `cloneFrom` does not carry Soroban data
+ * over, so the simulated footprint and resource fee are passed through
+ * explicitly, as the SDK's own `assembleTransaction` does. The builder's
+ * `fee` is per operation, and a Soroban transaction has exactly one.
+ */
+export function applyFeeMultiplier(tx: Transaction, multiplier: number): Transaction {
+  if (multiplier === 1) return tx;
+
+  return TransactionBuilder.cloneFrom(tx, {
+    fee: Math.ceil(parseInt(tx.fee, 10) * multiplier).toString(),
+    sorobanData: tx.toEnvelope().v1().tx().ext().sorobanData(),
+  }).build();
 }
 
 export function addressToScVal(address: string): xdr.ScVal {

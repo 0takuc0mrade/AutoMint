@@ -160,6 +160,25 @@ describe("toBaseUnits / fromBaseUnits", () => {
     expect(toBaseUnits(NaN, 6)).toBe(0n);
   });
 
+  it("returns 0n for non-decimal strings instead of throwing or misparsing (#1179)", () => {
+    expect(toBaseUnits("1e3", 7)).toBe(0n);
+    expect(toBaseUnits("Infinity", 7)).toBe(0n);
+    expect(toBaseUnits("-Infinity", 7)).toBe(0n);
+    expect(toBaseUnits("0x10", 7)).toBe(0n);
+    expect(toBaseUnits("0b1", 7)).toBe(0n);
+    expect(toBaseUnits("0o7", 7)).toBe(0n);
+    expect(toBaseUnits("-", 7)).toBe(0n);
+    expect(toBaseUnits(".", 7)).toBe(0n);
+    expect(toBaseUnits("1.2.3", 7)).toBe(0n);
+  });
+
+  it("parses decimals with an empty integer or fraction part (#1179)", () => {
+    expect(toBaseUnits(".5", 7)).toBe(5_000_000n);
+    expect(toBaseUnits("-.5", 7)).toBe(-5_000_000n);
+    expect(toBaseUnits("1.", 7)).toBe(10_000_000n);
+    expect(toBaseUnits(" 2.5 ", 7)).toBe(25_000_000n);
+  });
+
   it("rejects invalid decimals", () => {
     expect(() => toBaseUnits("1", -1)).toThrow(RangeError);
     expect(() => toBaseUnits("1", 1.5)).toThrow(RangeError);

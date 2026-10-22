@@ -29,7 +29,7 @@ Confirm the workspace builds before you spend anything on-chain:
 
 ```bash
 stellar contract build
-ls -la target/wasm32-unknown-unknown/release/automint_*.wasm
+ls -la target/wasm32v1-none/release/automint_*.wasm
 ```
 
 You should see five artifacts: `automint_registry.wasm`, `automint_bot_nft.wasm`, `automint_accrual.wasm`, `automint_marketplace.wasm`, `automint_token.wasm`.
@@ -101,8 +101,8 @@ The initialization calls it makes, in order:
 ```
 Registry.initialize    --admin $ADMIN_ADDRESS
 BotNFT.initialize      --admin $ADMIN_ADDRESS --registry $REGISTRY_ID
-Accrual.initialize     --admin $ADMIN_ADDRESS --bot_nft $BOT_NFT_ID --registry $REGISTRY_ID --points_per_amt 100
-Marketplace.initialize --admin $ADMIN_ADDRESS --bot-nft $BOT_NFT_ID --fee-bps 250
+Accrual.initialize     --admin $ADMIN_ADDRESS --bot_nft $BOT_NFT_ID --registry $REGISTRY_ID --token $TOKEN_ID --points_per_amt 100
+Marketplace.initialize --admin $ADMIN_ADDRESS --bot-nft $BOT_NFT_ID --fee-bps 250 --royalty-bps 0
 Token.initialize       --admin $ADMIN_ADDRESS --decimal 7 --name "AutoMint Token" --symbol "AMT"
 ```
 
@@ -120,7 +120,7 @@ Deployment is **not** transactional. A failure in phase 4 leaves deployed-but-un
 |---|---|---|
 | `error: account not found` | Deployer never funded | Re-run §1.2, then re-run the script |
 | `AlreadyInitialized` (error #1) | Re-running the script against contracts that already initialized | Contracts are already wired; skip to §3 with the IDs from the earlier log |
-| `wasm file not found` | `stellar contract build` produced nothing | Confirm the `wasm32-unknown-unknown` target is installed, then rebuild |
+| `wasm file not found` | `stellar contract build` produced nothing | Confirm the target recorded by the toolchain is installed, then rebuild |
 | Deploy succeeded, initialize failed | Partial state on-chain | Re-run only the failed `stellar contract invoke ... -- initialize` by hand with the IDs already printed |
 
 Every `initialize` is one-time and guarded by an `Initialized` flag, so a clean re-deploy of fresh contracts is always the safe fallback — testnet IDs are disposable.

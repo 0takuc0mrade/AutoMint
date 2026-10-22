@@ -862,24 +862,11 @@ impl MarketplaceContract {
             return Err(MarketplaceError::PaymentFailed);
         }
 
-        listing.active = false;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Listing(listing_id), &listing);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Listing(listing_id),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
-        env.storage()
-            .persistent()
-            .remove(&DataKey::BotListing(listing.bot_id));
         if let Err(e) = Self::record_sale(&env, listing.bot_tier, listing.price) {
             Self::clear_lock(&env);
             return Err(e);
         }
-        Self::on_listing_removed(&env, &listing);
-        Self::decrement_user_active_listing_count(&env, &listing.seller);
+        Self::deactivate_listing(&env, listing_id);
         let purchase = Purchase {
             listing_id,
             bot_id: listing.bot_id,
@@ -916,7 +903,7 @@ impl MarketplaceContract {
 
         seller.require_auth();
 
-        let mut listing: Listing = match env
+        let listing: Listing = match env
             .storage()
             .persistent()
             .get(&DataKey::Listing(listing_id))
@@ -957,29 +944,12 @@ impl MarketplaceContract {
             return Err(MarketplaceError::BotTransferFailed);
         }
 
-        // Mark listing inactive and persist.
-        listing.active = false;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Listing(listing_id), &listing);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Listing(listing_id),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
-
-        env.storage()
-            .persistent()
-            .remove(&DataKey::BotListing(listing.bot_id));
-
         // The id stays in its ListingPage as a tombstone (`active == false`);
         // `compact_page` reclaims the slot later.
+        Self::deactivate_listing(&env, listing_id);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
-        Self::on_listing_removed(&env, &listing);
-
-        Self::decrement_user_active_listing_count(&env, &listing.seller);
 
         env.events().publish(
             (symbol_short!("cancel"), seller, listing_id),
@@ -995,7 +965,7 @@ impl MarketplaceContract {
     pub fn reclaim_expired(env: Env, listing_id: u64) -> Result<(), MarketplaceError> {
         Self::check_and_set_lock(&env)?;
 
-        let mut listing: Listing = match env
+        let listing: Listing = match env
             .storage()
             .persistent()
             .get(&DataKey::Listing(listing_id))
@@ -1036,21 +1006,7 @@ impl MarketplaceContract {
             return Err(MarketplaceError::BotTransferFailed);
         }
 
-        listing.active = false;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Listing(listing_id), &listing);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Listing(listing_id),
-            LEDGER_THRESHOLD,
-            LEDGER_BUMP,
-        );
-        env.storage()
-            .persistent()
-            .remove(&DataKey::BotListing(listing.bot_id));
-
-        Self::on_listing_removed(&env, &listing);
-        Self::decrement_user_active_listing_count(&env, &listing.seller);
+        Self::deactivate_listing(&env, listing_id);
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
@@ -1139,24 +1095,9 @@ impl MarketplaceContract {
             Some(id) => id,
             None => return Ok(()),
         };
-        if let Some(mut listing) = env
-            .storage()
-            .persistent()
-            .get::<_, Listing>(&DataKey::Listing(listing_id))
-        {
-            if listing.bot_id == bot_id && listing.active {
-                listing.active = false;
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::Listing(listing_id), &listing);
-                env.storage()
-                    .persistent()
-                    .remove(&DataKey::BotListing(listing.bot_id));
-                Self::on_listing_removed(&env, &listing);
-                Self::decrement_user_active_listing_count(&env, &listing.seller);
-                env.events()
-                    .publish((symbol_short!("deactive"), bot_id), listing_id);
-            }
+        if Self::deactivate_listing(&env, listing_id) {
+            env.events()
+                .publish((symbol_short!("deactive"), bot_id), listing_id);
         }
         Ok(())
     }
@@ -1827,21 +1768,8 @@ impl MarketplaceContract {
         {
             return Err(MarketplaceError::BotTransferFailed);
         }
-        if let Some(mut listing) = escrowed_listing {
-            listing.active = false;
-            env.storage()
-                .persistent()
-                .set(&DataKey::Listing(listing.id), &listing);
-            env.storage().persistent().extend_ttl(
-                &DataKey::Listing(listing.id),
-                LEDGER_THRESHOLD,
-                LEDGER_BUMP,
-            );
-            env.storage()
-                .persistent()
-                .remove(&DataKey::BotListing(listing.bot_id));
-            Self::on_listing_removed(env, &listing);
-            Self::decrement_user_active_listing_count(env, &listing.seller);
+        if let Some(listing) = &escrowed_listing {
+            Self::deactivate_listing(env, listing.id);
         }
 
         // Pay out of escrow. Every leg is checked so a failure aborts the
@@ -2230,6 +2158,33 @@ impl MarketplaceContract {
 
     /// Called after `listing` has left the active index (sold, cancelled,
     /// deactivated). The floor is rescanned only if this listing held it.
+    /// The single place an active listing is retired: marks it inactive,
+    /// drops the bot index and decrements the global and per-seller counts.
+    /// Idempotent, because an escrow exit's `bot_nft.transfer` already calls
+    /// back into `on_bot_moved` before the outer path gets here (#915).
+    /// Returns whether this call did the deactivation.
+    fn deactivate_listing(env: &Env, listing_id: u64) -> bool {
+        let key = DataKey::Listing(listing_id);
+        let mut listing: Listing = match env.storage().persistent().get(&key) {
+            Some(l) => l,
+            None => return false,
+        };
+        if !listing.active {
+            return false;
+        }
+        listing.active = false;
+        env.storage().persistent().set(&key, &listing);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::BotListing(listing.bot_id));
+        Self::on_listing_removed(env, &listing);
+        Self::decrement_user_active_listing_count(env, &listing.seller);
+        true
+    }
+
     fn on_listing_removed(env: &Env, listing: &Listing) {
         Self::write_active_listing_count(env, Self::active_listing_count(env).saturating_sub(1));
         let mut stats = Self::read_tier_stats(env, listing.bot_tier);

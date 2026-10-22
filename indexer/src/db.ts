@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_contract ON events(contract);
 CREATE INDEX IF NOT EXISTS idx_events_event    ON events(event);
 CREATE INDEX IF NOT EXISTS idx_events_ledger   ON events(ledger);
+CREATE INDEX IF NOT EXISTS idx_events_contract_event ON events(contract, event);
+CREATE INDEX IF NOT EXISTS idx_events_closed_at ON events(ledger_closed_at);
 
 CREATE TABLE IF NOT EXISTS checkpoint (
   id         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -558,9 +560,8 @@ export class IndexerDb {
         `SELECT substr(ledger_closed_at, 1, 10) AS day,
                 contract, event, data_json
          FROM events
-         WHERE ledger_closed_at IS NOT NULL
-           AND substr(ledger_closed_at, 1, 10) >= ?
-         ORDER BY day`,
+         WHERE ledger_closed_at >= ?
+         ORDER BY ledger_closed_at`,
       )
       .all(fromDay) as {
       day: string;

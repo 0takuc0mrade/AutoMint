@@ -1,8 +1,7 @@
 /**
  * Sentry browser-side SDK initialization.
  *
- * Loaded automatically by the Next.js Sentry instrumentation hook
- * (instrumentation.ts → onClientEntry).
+ * Injected into browser entry points by withSentryConfig in next.config.js.
  *
  * Privacy guarantees
  * ------------------

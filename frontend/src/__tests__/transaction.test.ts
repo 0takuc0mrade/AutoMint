@@ -21,8 +21,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Account, Keypair, nativeToScVal } from "@stellar/stellar-sdk";
 import { toast } from "sonner";
 import { useListBot } from "@/hooks/useMarketplace";
-import { resumePendingTransactions, __resetSequenceStateForTests } from "@/lib/transaction";
-import { CONTRACT_ADDRESSES, STELLAR_NETWORK_PASSPHRASE } from "@/lib/constants";
+import { executeTransaction, resumePendingTransactions, __resetSequenceStateForTests } from "@/lib/transaction";
+import { CONTRACT_ADDRESSES, STELLAR_NETWORK_PASSPHRASE, TX_TIMEOUT, TX_POLL_TIMEOUT_MS } from "@/lib/constants";
 
 const MARKETPLACE_CONTRACT_ID = CONTRACT_ADDRESSES.marketplace;
 import { useTxStore, type TxRecord } from "@/store/txStore";
@@ -245,6 +245,96 @@ const storedTransactions = (): TxRecord[] => useTxStore.getState().transactions;
 // ── The seven pipeline paths ────────────────────────────────────────────────
 
 describe("transaction pipeline", () => {
+  it.each([false, true])("reports an explorer link on success (BAD_SEQ retry: %s)", async (retry) => {
+    const previousNetwork = process.env.NEXT_PUBLIC_NETWORK;
+    process.env.NEXT_PUBLIC_NETWORK = "TESTNET";
+    try {
+      if (retry) mockServer.sendTransaction.mockResolvedValueOnce(sendBadSeq).mockResolvedValue(sendPending);
+      const onStatus = jest.fn();
+      await executeTransaction({
+        contractId: MARKETPLACE_CONTRACT_ID,
+        method: "mint",
+        args: [],
+        sourceAddress: seller,
+        onStatus,
+      });
+      expect(onStatus).toHaveBeenLastCalledWith({
+        stage: "success",
+        hash: TX_HASH,
+        explorerUrl: `https://stellar.expert/explorer/testnet/tx/${TX_HASH}`,
+      });
+    } finally {
+      if (previousNetwork === undefined) delete process.env.NEXT_PUBLIC_NETWORK;
+      else process.env.NEXT_PUBLIC_NETWORK = previousNetwork;
+    }
+  });
+
+  it("reports success without an explorer action on unsupported networks", async () => {
+    const previousNetwork = process.env.NEXT_PUBLIC_NETWORK;
+    process.env.NEXT_PUBLIC_NETWORK = "FUTURENET";
+    try {
+      const onStatus = jest.fn();
+      await executeTransaction({
+        contractId: MARKETPLACE_CONTRACT_ID,
+        method: "mint",
+        args: [],
+        sourceAddress: seller,
+        onStatus,
+      });
+      expect(onStatus).toHaveBeenLastCalledWith({ stage: "success", hash: TX_HASH });
+    } finally {
+      if (previousNetwork === undefined) delete process.env.NEXT_PUBLIC_NETWORK;
+      else process.env.NEXT_PUBLIC_NETWORK = previousNetwork;
+    }
+  });
+
+  it("serializes queued submissions and builds each from a fresh, precise account sequence", async () => {
+    const firstSequence = "9007199254740993";
+    mockServer.getAccount
+      .mockResolvedValueOnce(new Account(seller, firstSequence))
+      .mockResolvedValueOnce(new Account(seller, "9007199254740994"));
+    let finishFirst!: (response: typeof getSuccess) => void;
+    mockServer.getTransaction.mockImplementationOnce(
+      () => new Promise((resolve) => { finishFirst = resolve; }),
+    );
+    const params = {
+      contractId: MARKETPLACE_CONTRACT_ID,
+      method: "mint",
+      args: [],
+      sourceAddress: seller,
+    };
+    const onStatus = jest.fn();
+    const first = executeTransaction({ ...params, onStatus });
+    const second = executeTransaction(params);
+    // Wait until the first transaction reaches confirmation polling.
+    while (!finishFirst) await new Promise((resolve) => realSetTimeout(resolve, 0));
+    expect(mockServer.getAccount).toHaveBeenCalledTimes(1);
+    expect(mockSignTransaction).toHaveBeenCalledTimes(1);
+    finishFirst(getSuccess);
+    await Promise.all([first, second]);
+    expect(mockServer.getAccount).toHaveBeenCalledTimes(2);
+    expect(mockServer.simulateTransaction.mock.calls.map(([tx]) => tx.sequence)).toEqual([
+      "9007199254740994",
+      "9007199254740995",
+    ]);
+    expect(onStatus).toHaveBeenLastCalledWith(expect.objectContaining({
+      explorerUrl: expect.stringContaining("stellar.expert/explorer/"),
+    }));
+  });
+
+  it("uses the refreshed full-precision sequence for a BAD_SEQ rebuild", async () => {
+    mockServer.getAccount
+      .mockResolvedValueOnce(new Account(seller, "9007199254740993"))
+      .mockResolvedValueOnce(new Account(seller, "9007199254740995"));
+    mockServer.sendTransaction.mockResolvedValueOnce(sendBadSeq).mockResolvedValue(sendPending);
+    const { error } = await submitListing();
+    expect(error).toBeUndefined();
+    expect(mockServer.simulateTransaction.mock.calls.map(([tx]) => tx.sequence)).toEqual([
+      "9007199254740994",
+      "9007199254740996",
+    ]);
+  });
+
   it("happy path: simulates, assembles, signs, submits, confirms, and toasts success", async () => {
     mockServer.getTransaction.mockResolvedValueOnce(getNotFound).mockResolvedValue(getSuccess);
 
@@ -415,6 +505,25 @@ describe("resumePendingTransactions", () => {
     argsSummary: "7, 100",
     status: "pending",
     timestamp,
+  });
+
+  it("allows a resumed transaction to confirm after the former early-expiry boundary", async () => {
+    const now = Date.now();
+    useTxStore.setState({ transactions: [pendingRecord(now - (TX_TIMEOUT + 15) * 1000)] });
+    mockServer.getTransaction.mockResolvedValueOnce(getNotFound).mockResolvedValue(getSuccess);
+    await resumePendingTransactions();
+    expect(storedTransactions()[0]?.status).toBe("success");
+    expect(mockServer.getTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("expires an unseen transaction at the shared confirmation deadline", async () => {
+    const now = Date.now();
+    clock = jest.spyOn(Date, "now").mockReturnValue(now);
+    useTxStore.setState({ transactions: [pendingRecord(now - TX_POLL_TIMEOUT_MS)] });
+    mockServer.getTransaction.mockResolvedValue(getNotFound);
+    await resumePendingTransactions();
+    expect(storedTransactions()[0]?.status).toBe("failed");
+    expect(mockServer.getTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("resolves a transaction left pending by a poll timeout once it lands", async () => {

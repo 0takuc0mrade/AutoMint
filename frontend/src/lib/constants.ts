@@ -92,6 +92,8 @@ export const CONTRACT_ADDRESSES: Readonly<Record<ContractName, string>> = {
 
 /** Transaction tunables */
 export const TX_TIMEOUT = Number(process.env.NEXT_PUBLIC_TX_TIMEOUT) || 30;
+/** Confirmation window shared by live submissions and resumed transactions. */
+export const TX_POLL_TIMEOUT_MS = (TX_TIMEOUT + 30) * 1000;
 export const BASE_FEE = process.env.NEXT_PUBLIC_BASE_FEE ?? "100";
 
 /**

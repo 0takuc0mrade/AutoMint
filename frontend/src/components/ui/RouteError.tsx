@@ -39,7 +39,7 @@ export function RouteError({
 }: RouteErrorProps) {
   useEffect(() => {
     // The reporter's `beforeSend` scrubs Stellar addresses and e-mails, so
-    // the stack trace can be sent as-is. See src/lib/sentry.client.ts.
+    // the stack trace can be sent as-is. See sentry.client.config.ts.
     Sentry.captureException(error, { tags: { boundary } });
   }, [error, boundary]);
 

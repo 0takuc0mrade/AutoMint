@@ -96,6 +96,6 @@ process request data under their own policies.
 
 ## Related implementation
 
-- [Browser Sentry setup](../frontend/src/lib/sentry.client.ts)
+- [Browser Sentry setup](../frontend/sentry.client.config.ts)
 - [Server Sentry setup](../frontend/src/lib/sentry.server.ts)
 - [Analytics tracking](../frontend/src/lib/analytics.ts)

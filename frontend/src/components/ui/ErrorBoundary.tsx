@@ -5,7 +5,7 @@
  *
  * Wraps the entire React tree and catches any unhandled render error.
  * The error is forwarded to Sentry **after** stripping Stellar addresses
- * and any PII via the `beforeSend` hook registered in sentry.client.ts.
+ * and any PII via the `beforeSend` hook registered in sentry.client.config.ts.
  *
  * Usage
  * -----

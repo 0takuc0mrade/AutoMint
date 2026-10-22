@@ -1,11 +1,12 @@
 import { Contract, TransactionBuilder, scValToNative, xdr, SorobanRpc } from "@stellar/stellar-sdk";
 import {
   BASE_FEE,
-  HORIZON_URL,
   POLL_INTERVAL_MS,
   STELLAR_NETWORK_PASSPHRASE,
   TX_TIMEOUT,
+  TX_POLL_TIMEOUT_MS,
 } from "./constants";
+import { getExplorerUrl } from "./explorer";
 import {
   applyFeeMultiplier,
   rpcCall,
@@ -78,29 +79,25 @@ export interface ExecuteTransactionParams {
 }
 
 /**
- * Per-account sequence tracking state.
+ * Per-account transaction queue state.
  */
 interface SequenceState {
-  current: number;
-  pending: number;
   queue: (() => Promise<unknown>)[];
   processing: boolean;
 }
 
 /**
- * Module-level tracking of pending sequence numbers per account address.
+ * Module-level transaction queues per account address.
  * Used to serialize transaction submissions and avoid bad sequence errors.
  */
 const sequenceState = new Map<string, SequenceState>();
 
 /**
- * Get or initialize the sequence state for an account.
+ * Get or initialize the transaction queue for an account.
  */
 function getSequenceState(address: string): SequenceState {
   if (!sequenceState.has(address)) {
     sequenceState.set(address, {
-      current: 0,
-      pending: 0,
       queue: [],
       processing: false,
     });
@@ -161,13 +158,6 @@ export function summarizeArgs(args: xdr.ScVal[]): string {
       }
     })
     .join(", ");
-}
-
-/**
- * Build explorer URL from transaction hash.
- */
-function buildExplorerUrl(hash: string): string {
-  return `${HORIZON_URL}/transactions/${hash}`;
 }
 
 /**
@@ -261,7 +251,7 @@ async function pollSubmitted(
   server: SorobanRpc.Server,
   hash: string,
 ): Promise<{ hash: string; result: unknown }> {
-  const timeoutMs = (TX_TIMEOUT + 30) * 1000;
+  const timeoutMs = TX_POLL_TIMEOUT_MS;
   const start = Date.now();
   let delayMs = 1000;
   const maxDelayMs = 8000;
@@ -328,7 +318,7 @@ async function pollSubmitted(
  * - Submitting to RPC
  * - Polling for confirmation (with timeout)
  * - Decoding and returning the contract return value
- * - Sequence number management (incremented before each submission, reconciled after)
+ * - Per-account serialization with fresh account state for every build
  * - Automatic retry on BAD_SEQ with refreshed account state
  *
  * @param params execution parameters including contract, method, args, and address
@@ -356,7 +346,6 @@ export async function executeTransaction(params: ExecuteTransactionParams): Prom
           args,
           sourceAddress,
           onStatus,
-          state,
         );
         resolve(result);
       } catch (error) {
@@ -370,7 +359,7 @@ export async function executeTransaction(params: ExecuteTransactionParams): Prom
 }
 
 /**
- * Internal transaction execution with sequence management.
+ * Internal transaction execution using the network's current account sequence.
  */
 async function executeTransactionInternal(
   contractId: string,
@@ -378,17 +367,11 @@ async function executeTransactionInternal(
   args: xdr.ScVal[],
   sourceAddress: string,
   onStatus: ((status: TransactionStatus) => void) | undefined,
-  sequenceState: SequenceState,
 ): Promise<unknown> {
   onStatus?.({ stage: "building" });
 
   const contract = new Contract(contractId);
   const account = await rpcCall((server) => server.getAccount(sourceAddress));
-
-  // Initialize sequence tracking on first transaction for this account
-  if (sequenceState.current === 0) {
-    sequenceState.current = Number(account.sequenceNumber());
-  }
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -438,9 +421,6 @@ async function executeTransactionInternal(
 
   onStatus?.({ stage: "submitting" });
 
-  // Increment pending sequence for this submission
-  sequenceState.pending = sequenceState.current + 1;
-
   // Once the network has accepted the transaction: persist it to the history
   // (so a tab closed mid-confirmation is resolved on the next load) and report
   // that confirmation has begun.
@@ -457,11 +437,8 @@ async function executeTransactionInternal(
   try {
     const { hash, result } = await submitTxWithHash(signedXdr, onAccepted);
 
-    // Increment current sequence on successful submission
-    sequenceState.current = sequenceState.pending;
-
-    const explorerUrl = buildExplorerUrl(hash);
-    onStatus?.({ stage: "success", hash, explorerUrl });
+    const explorerUrl = getExplorerUrl(hash);
+    onStatus?.({ stage: "success", hash, ...(explorerUrl ? { explorerUrl } : {}) });
 
     return result;
   } catch (error) {
@@ -471,8 +448,6 @@ async function executeTransactionInternal(
     if (error instanceof TxSendFailedError && errorMsg.includes("BAD_SEQ")) {
       // Retry once with refreshed account state
       const refreshedAccount = await rpcCall((server) => server.getAccount(sourceAddress));
-      sequenceState.current = Number(refreshedAccount.sequenceNumber());
-      sequenceState.pending = sequenceState.current + 1;
 
       onStatus?.({ stage: "building" });
 
@@ -514,10 +489,8 @@ async function executeTransactionInternal(
         onAccepted,
       );
 
-      sequenceState.current = sequenceState.pending;
-
-      const explorerUrl = buildExplorerUrl(retryHash);
-      onStatus?.({ stage: "success", hash: retryHash, explorerUrl });
+      const explorerUrl = getExplorerUrl(retryHash);
+      onStatus?.({ stage: "success", hash: retryHash, ...(explorerUrl ? { explorerUrl } : {}) });
 
       return retryResult;
     }
@@ -558,7 +531,7 @@ function toResumeOutcome(
  */
 async function resumeOne(record: TxRecord): Promise<void> {
   const { resolveTransaction } = useTxStore.getState();
-  const maxWaitMs = (TX_TIMEOUT + 10) * 1000; // matches the live-poll window
+  const maxWaitMs = TX_POLL_TIMEOUT_MS;
   const expiresAt = record.timestamp + maxWaitMs;
   const startTime = Date.now();
 

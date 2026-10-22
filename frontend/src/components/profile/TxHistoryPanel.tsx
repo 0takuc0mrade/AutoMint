@@ -87,14 +87,18 @@ export function TxHistoryPanel({ account }: TxHistoryPanelProps) {
                 </p>
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   {formatTimestamp(tx.timestamp)} ·{" "}
-                  <a
-                    href={getExplorerUrl(tx.hash)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline"
-                  >
-                    {tx.hash.slice(0, 8)}…
-                  </a>
+                  {getExplorerUrl(tx.hash) ? (
+                    <a
+                      href={getExplorerUrl(tx.hash)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline"
+                    >
+                      {tx.hash.slice(0, 8)}…
+                    </a>
+                  ) : (
+                    <span>{tx.hash.slice(0, 8)}…</span>
+                  )}
                 </p>
               </div>
               <span

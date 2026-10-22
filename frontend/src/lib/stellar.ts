@@ -20,6 +20,7 @@ import {
   RPC_FAILOVER_AFTER,
   STELLAR_NETWORK_PASSPHRASE,
   TX_TIMEOUT,
+  TX_POLL_TIMEOUT_MS,
 } from "./constants";
 import { withRetry, isRetryableRpcError } from "./rpcRetry";
 import { useWalletStore } from "@/store/walletStore";
@@ -732,7 +733,7 @@ export async function submitTx(signedXdr: string): Promise<unknown> {
   }
 
   // Poll with exponential backoff and a hard timeout so we never hang forever.
-  const timeoutMs = (TX_TIMEOUT + 30) * 1000;
+  const timeoutMs = TX_POLL_TIMEOUT_MS;
   const start = Date.now();
   let delayMs = 1000;
   const maxDelayMs = 8000;

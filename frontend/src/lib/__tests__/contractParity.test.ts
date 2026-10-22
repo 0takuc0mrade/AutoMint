@@ -30,6 +30,7 @@ const PARITY: Record<string, () => [unknown, unknown]> = {
 const LOCAL_ONLY = new Set([
   "constants.RPC_FAILOVER_AFTER",
   "constants.TX_TIMEOUT",
+  "constants.TX_POLL_TIMEOUT_MS",
   "constants.LEADERBOARD_LIMIT",
   "constants.POLL_INTERVAL_MS",
   "constants.COUNTER_TICK_MS",
